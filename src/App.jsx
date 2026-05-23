@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { usePoseExtractor } from './hooks/usePoseExtractor'
+import { usePoseExtractor, DEFAULT_SETTINGS } from './hooks/usePoseExtractor'
 import FrameInspector from './components/FrameInspector'
 import './App.css'
 
@@ -42,11 +42,16 @@ function StatBox({ label, value, unit }) {
 export default function App() {
   const { processVideo, status, progress, frames, stats, error } = usePoseExtractor()
   const [dragOver, setDragOver] = useState(false)
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS)
   const inputRef = useRef(null)
+
+  function setSetting(key, value) {
+    setSettings((prev) => ({ ...prev, [key]: value }))
+  }
 
   function handleFile(file) {
     if (!file || !file.type.startsWith('video/')) return
-    processVideo(file)
+    processVideo(file, settings)
   }
 
   function handleDrop(e) {
@@ -104,6 +109,70 @@ export default function App() {
         )}
       </div>
 
+      {/* Settings panel */}
+      <div className="settings">
+        <div className="settings__title">Extraction settings</div>
+        <div className="settings__grid">
+
+          <div className="setting">
+            <div className="setting__header">
+              <span className="setting__label">Capture fps</span>
+              <span className="setting__value">{settings.captureFps} fps</span>
+            </div>
+            <input type="range" min={1} max={30} step={1}
+              value={settings.captureFps}
+              onChange={(e) => setSetting('captureFps', Number(e.target.value))}
+            />
+            <span className="setting__hint">
+              How often to sample the video - lower = fewer duplicate poses in lower fps videos
+            </span>
+          </div>
+
+          <div className="setting">
+            <div className="setting__header">
+              <span className="setting__label">confidence threshold</span>
+              <span className="setting__value">{Math.round(settings.confidenceThreshold * 100)}%</span>
+            </div>
+            <input type="range" min={0.1} max={0.95} step={0.05}
+              value={settings.confidenceThreshold}
+              onChange={(e) => setSetting('confidenceThreshold', Number(e.target.value))}
+            />
+            <span className="setting__hint">
+              Drop frames where MediaPipe is uncertain about joint positions
+            </span>
+          </div>
+
+          <div className="setting">
+            <div className="setting__header">
+              <span className="setting__label">keyframe sensitivity</span>
+              <span className="setting__value">{settings.keyframeThreshold.toFixed(2)}</span>
+            </div>
+            <input type="range" min={0.01} max={0.2} step={0.01}
+              value={settings.keyframeThreshold}
+              onChange={(e) => setSetting('keyframeThreshold', Number(e.target.value))}
+            />
+            <span className="setting__hint">
+              Minimum pose difference to count as new keyframe - higher = fewer and more unique poses per frame
+            </span>
+          </div>
+
+          <div className="setting">
+            <div className="setting__header">
+              <span className="setting__label">max frames</span>
+              <span className="setting__value">{settings.maxFrames}</span>
+            </div>
+            <input type="range" min={10} max={200} step={5}
+              value={settings.maxFrames}
+              onChange={(e) => setSetting('maxFrames', Number(e.target.value))}
+            />
+            <span className="setting__hint">
+              Hard frame cap -if keyframes exceed this then evenly subsample
+            </span>
+          </div>
+
+        </div>
+      </div>
+
       {/* Upload zone */}
       <div
         className={uploadZoneClass}
@@ -136,10 +205,10 @@ export default function App() {
       {/* Stats */}
       {stats && (
         <div className="stats-row">
-          <StatBox label="frames extracted" value={stats.frameCount} />
-          <StatBox label="video duration" value={stats.duration} unit="s" />
-          <StatBox label="sample rate" value={stats.fps} unit="fps" />
-          <StatBox label="total scraped" value={stats.totalFrames} unit="raw" />
+          <StatBox label="sampled"    value={stats.totalSampled}  unit={`@ ${stats.captureFps}fps`} />
+          <StatBox label="confident"  value={stats.capturedCount} unit="frames" />
+          <StatBox label="keyframes"  value={stats.keyframeCount} unit="unique" />
+          <StatBox label="final"      value={stats.frameCount}    unit="kept" />
         </div>
       )}
 
