@@ -91,7 +91,7 @@ export default function App() {
           <h1 className="header__title">PoseFinder</h1>
         </div>
         <p className="header__desc">
-          Upload a video and get pose data now.
+          Upload a video, select who you want to track and get the pose data now.
         </p>
       </div>
 
