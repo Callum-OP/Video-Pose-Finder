@@ -141,7 +141,35 @@ export default function SkeletonCanvas({
         ctx.font = '10px DM Mono, monospace'
         ctx.fillText(`Person ${idx + 1}`, 24, 17 + idx * 18)
       })
+      
+      // Floating label above each person's nose/head joint
+      persons.forEach((lms, idx) => {
+        const c    = PERSON_COLORS[idx % PERSON_COLORS.length]
+        const nose = lms[0]  // landmark 0 = nose
+        if (!nose || (nose.v ?? 1) < 0.2) return
 
+        const lx = nose.x * width
+        const ly = nose.y * height - 18  // float above the head
+
+        const label   = `Person ${idx + 1}`
+        const padding = 5
+        ctx.font = 'bold 11px DM Mono, monospace'
+        const tw = ctx.measureText(label).width
+
+        // Pill background in person colour
+        ctx.fillStyle = c
+        ctx.beginPath()
+        ctx.roundRect(lx - tw / 2 - padding, ly - 12, tw + padding * 2, 16, 4)
+        ctx.fill()
+
+        // Label text in dark
+        ctx.fillStyle = '#0a0a0f'
+        ctx.textAlign = 'center'
+        ctx.fillText(label, lx, ly)
+        ctx.textAlign = 'left'
+      })
+
+      // Bottom hint
       ctx.fillStyle = 'rgba(74,74,106,0.8)'
       ctx.font = '10px DM Mono, monospace'
       ctx.fillText('click a skeleton to track', 8, height - 8)
