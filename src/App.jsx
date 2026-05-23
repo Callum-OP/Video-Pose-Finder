@@ -1,11 +1,14 @@
 import { useRef, useState } from 'react'
 import { usePoseExtractor, DEFAULT_SETTINGS } from './hooks/usePoseExtractor'
 import FrameInspector from './components/FrameInspector'
+import PersonSelector from './components/PersonSelector'
 import './App.css'
 
 const STATUS_COLOR = {
   idle:            '#4a4a6a',
   'loading-model': '#f5a623',
+  prescanning:     '#f5a623',
+  'select-person': '#f5a623',
   processing:      '#6366f1',
   done:            '#22c55e',
   error:           '#ef4444',
@@ -14,17 +17,11 @@ const STATUS_COLOR = {
 const STATUS_LABEL = {
   idle:            '● Idle',
   'loading-model': '◌ Loading model…',
+  prescanning:     '◌ Pre-scanning for people…',
+  'select-person': '◎ Select a person to track',
   processing:      '◎ Processing…',
   done:            '✓ Done',
   error:           '✕ Error',
-}
-
-function Tag({ children, color = '#4a4a6a' }) {
-  return (
-    <span className="tag" style={{ color, borderColor: color }}>
-      {children}
-    </span>
-  )
 }
 
 function StatBox({ label, value, unit }) {
@@ -40,7 +37,14 @@ function StatBox({ label, value, unit }) {
 }
 
 export default function App() {
-  const { processVideo, status, progress, frames, stats, error } = usePoseExtractor()
+  const {
+    preScan, processVideo,
+    status, progress,
+    frames, scanFrames,
+    stats, error,
+    fileRef,
+  } = usePoseExtractor()
+
   const [dragOver, setDragOver] = useState(false)
   const [settings, setSettings] = useState(DEFAULT_SETTINGS)
   const [lastFile, setLastFile] = useState(null)
@@ -52,9 +56,8 @@ export default function App() {
 
   function handleFile(file) {
     if (!file || !file.type.startsWith('video/')) return
-      setLastFile(file)
-    processVideo(file, settings)
-    // Reset input so the same file can be re-selected
+    setLastFile(file)
+    preScan(file)
     if (inputRef.current) inputRef.current.value = ''
   }
 
@@ -62,6 +65,11 @@ export default function App() {
     e.preventDefault()
     setDragOver(false)
     handleFile(e.dataTransfer.files[0])
+  }
+
+  // Called by PersonSelector when user clicks a skeleton
+  function handlePersonSelected(seed) {
+    processVideo(fileRef.current, settings, seed)
   }
 
   function exportJSON() {
@@ -74,7 +82,8 @@ export default function App() {
     URL.revokeObjectURL(url)
   }
 
-  const isProcessing = status === 'processing' || status === 'loading-model'
+  const isProcessing = status === 'processing' || status === 'loading-model' || status === 'prescanning'
+  const isSelecting  = status === 'select-person'
 
   const uploadZoneClass = [
     'upload-zone',
@@ -91,7 +100,7 @@ export default function App() {
           <h1 className="header__title">PoseFinder</h1>
         </div>
         <p className="header__desc">
-          Upload a video, select who you want to track and get the pose data now.
+          Upload a video and get pose data now.
         </p>
       </div>
 
@@ -100,7 +109,7 @@ export default function App() {
         <span className="status-bar__label" style={{ color: STATUS_COLOR[status] }}>
           {STATUS_LABEL[status]}
         </span>
-        {isProcessing && (
+        {(isProcessing || isSelecting) && status !== 'select-person' && (
           <div className="status-bar__track">
             <div className="status-bar__fill" style={{ width: `${progress}%` }} />
           </div>
@@ -114,7 +123,6 @@ export default function App() {
       <div className="settings">
         <div className="settings__title-row">
           <span className="settings__title">Extraction settings</span>
-          {/* Tailwind: only additive here for the rose button */}
           <button
             onClick={() => setSettings(DEFAULT_SETTINGS)}
             className="btn bg-transparent border border-rose-500 rounded-[4px] px-3.5 py-1.5 text-rose-500 text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-rose-500/10"
@@ -148,7 +156,7 @@ export default function App() {
               onChange={(e) => setSetting('confidenceThreshold', Number(e.target.value))}
             />
             <span className="setting__hint">
-              Drop frames where the positions of joint are uncertain — higher = fewer, more accurate frames
+              Drop frames where the positions of joints are uncertain — higher = fewer, more accurate frames
             </span>
           </div>
 
@@ -183,7 +191,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* Upload zone */}
+      {/* Upload row */}
       <div className="upload-row">
         <div
           className={uploadZoneClass}
@@ -206,23 +214,29 @@ export default function App() {
           <div className="upload-zone__hint">MP4, MOV, WebM</div>
         </div>
       </div>
-      <div className="upload-row flex items-center justify-between width-full">
-        {/* Left */}
-        <div></div>
-        {/* Right */}
-        {lastFile && !isProcessing && (
+
+      {/* Rescan button */}
+      {lastFile && !isProcessing && !isSelecting && (
+        <div className="flex justify-end mb-6">
           <button
-            className="btn bg-transparent border border-indigo-500 rounded-[4px] px-3.5 py-1.5 text-indigo-500 text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-indigo-500/10 whitespace-nowrap"
-            onClick={() => processVideo(lastFile, settings)}
+            className="btn bg-transparent border border-indigo-500 rounded-[4px] px-3.5 py-1.5 text-indigo-500 text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-indigo-500/10"
+            onClick={() => preScan(lastFile)}
           >
             ↺ Rescan
           </button>
-        )}
-      </div>
-      
+        </div>
+      )}
+      <br></br>
+
       {/* Error */}
-      {error && (
-        <div className="error-banner">{error}</div>
+      {error && <div className="error-banner">{error}</div>}
+
+      {/* Person selector filmstrip */}
+      {isSelecting && scanFrames.length > 0 && (
+        <PersonSelector
+          scanFrames={scanFrames}
+          onSelect={handlePersonSelected}
+        />
       )}
 
       {/* Stats */}
@@ -240,11 +254,13 @@ export default function App() {
         <>
           <div className="inspector-header">
             <h2 className="inspector-header__title">Frame Inspector</h2>
-            <button className="btn bg-transparent border border-green-500 rounded-[4px] px-3.5 py-1.5 text-green-500 text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-green-500/10" onClick={exportJSON}>
+            <button
+              className="btn bg-transparent border border-green-500 rounded-[4px] px-3.5 py-1.5 text-green-500 text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-green-500/10"
+              onClick={exportJSON}
+            >
               ↓ Export JSON
             </button>
           </div>
-
           <div className="inspector-card">
             <FrameInspector frames={frames} stats={stats} />
           </div>
