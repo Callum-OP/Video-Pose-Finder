@@ -103,23 +103,6 @@
   letter-spacing: 0.1em;
 }
 
-.btn-reset {
-  background: transparent;
-  border: none;
-  padding: 0;
-  color: #4a4a6a;
-  font-size: 10px;
-  font-family: 'DM Mono', monospace;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  cursor: pointer;
-  transition: color 0.1s;
-}
-
-.btn-reset:hover {
-  color: #8888aa;
-}
-
 .settings__grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -274,20 +257,12 @@ input[type='range'] {
   color: #eeeef5;
 }
 
-.btn-export {
-  background: transparent;
-  border: 1px solid #39e8a0;
-  border-radius: 4px;
+.btn {
   padding: 6px 14px;
-  color: #39e8a0;
   font-size: 12px;
   font-family: 'DM Mono', monospace;
   cursor: pointer;
   transition: background 0.1s;
-}
-
-.btn-export:hover {
-  background: rgba(57, 232, 160, 0.08);
 }
 
 .inspector-card {

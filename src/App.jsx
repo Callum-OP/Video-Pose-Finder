@@ -74,8 +74,8 @@ export default function App() {
 
   const uploadZoneClass = [
     'upload-zone',
-    dragOver        ? 'upload-zone--drag' : '',
-    isProcessing    ? 'upload-zone--busy' : '',
+    dragOver     ? 'upload-zone--drag' : '',
+    isProcessing ? 'upload-zone--busy' : '',
   ].filter(Boolean).join(' ')
 
   return (
@@ -93,10 +93,7 @@ export default function App() {
 
       {/* Status bar */}
       <div className="status-bar">
-        <span
-          className="status-bar__label"
-          style={{ color: STATUS_COLOR[status] }}
-        >
+        <span className="status-bar__label" style={{ color: STATUS_COLOR[status] }}>
           {STATUS_LABEL[status]}
         </span>
         {isProcessing && (
@@ -112,8 +109,12 @@ export default function App() {
       {/* Settings panel */}
       <div className="settings">
         <div className="settings__title-row">
-          <span className="settings__title">extraction settings</span>
-          <button className=" border-rose-500 rounded text-rose-700" onClick={() => setSettings(DEFAULT_SETTINGS)}>
+          <span className="settings__title">Extraction settings</span>
+          {/* Tailwind: only additive here for the rose button */}
+          <button
+            onClick={() => setSettings(DEFAULT_SETTINGS)}
+            className="btn bg-transparent border border-rose-500 rounded-[4px] px-3.5 py-1.5 text-rose-500 text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-rose-500/10"
+          >
             Reset Defaults
           </button>
         </div>
@@ -129,13 +130,13 @@ export default function App() {
               onChange={(e) => setSetting('captureFps', Number(e.target.value))}
             />
             <span className="setting__hint">
-              How often to sample the video - lower = fewer duplicate poses in lower fps videos
+              How often to sample the video — lower = fewer duplicate poses in lower fps videos
             </span>
           </div>
 
           <div className="setting">
             <div className="setting__header">
-              <span className="setting__label">confidence threshold</span>
+              <span className="setting__label">Confidence threshold</span>
               <span className="setting__value">{Math.round(settings.confidenceThreshold * 100)}%</span>
             </div>
             <input type="range" min={0.1} max={0.95} step={0.05}
@@ -143,13 +144,13 @@ export default function App() {
               onChange={(e) => setSetting('confidenceThreshold', Number(e.target.value))}
             />
             <span className="setting__hint">
-              Drop frames where MediaPipe is uncertain about joint positions
+              Drop frames where the positions of joint are uncertain
             </span>
           </div>
 
           <div className="setting">
             <div className="setting__header">
-              <span className="setting__label">keyframe sensitivity</span>
+              <span className="setting__label">Keyframe sensitivity</span>
               <span className="setting__value">{settings.keyframeThreshold.toFixed(2)}</span>
             </div>
             <input type="range" min={0.01} max={0.2} step={0.01}
@@ -157,13 +158,13 @@ export default function App() {
               onChange={(e) => setSetting('keyframeThreshold', Number(e.target.value))}
             />
             <span className="setting__hint">
-              Minimum pose difference to count as new keyframe - higher = fewer and more unique poses per frame
+              Minimum pose difference to count as a new keyframe — higher = fewer, more unique poses
             </span>
           </div>
 
           <div className="setting">
             <div className="setting__header">
-              <span className="setting__label">max frames</span>
+              <span className="setting__label">Max frames</span>
               <span className="setting__value">{settings.maxFrames}</span>
             </div>
             <input type="range" min={10} max={200} step={5}
@@ -171,7 +172,7 @@ export default function App() {
               onChange={(e) => setSetting('maxFrames', Number(e.target.value))}
             />
             <span className="setting__hint">
-              Hard frame cap -if keyframes exceed this then evenly subsample
+              Hard frame cap — evenly subsamples if keyframes still exceed this
             </span>
           </div>
 
@@ -197,9 +198,7 @@ export default function App() {
         <div className="upload-zone__label">
           {isProcessing ? 'Processing…' : 'Drop a video or click to upload'}
         </div>
-        <div className="upload-zone__hint">
-          MP4, MOV, WebM
-        </div>
+        <div className="upload-zone__hint">MP4, MOV, WebM</div>
       </div>
 
       {/* Error */}
@@ -210,10 +209,10 @@ export default function App() {
       {/* Stats */}
       {stats && (
         <div className="stats-row">
-          <StatBox label="sampled"    value={stats.totalSampled}  unit={`@ ${stats.captureFps}fps`} />
-          <StatBox label="confident"  value={stats.capturedCount} unit="frames" />
-          <StatBox label="keyframes"  value={stats.keyframeCount} unit="unique" />
-          <StatBox label="final"      value={stats.frameCount}    unit="kept" />
+          <StatBox label="Sampled"   value={stats.totalSampled}  unit={`@ ${stats.captureFps}fps`} />
+          <StatBox label="Confident" value={stats.capturedCount} unit="frames" />
+          <StatBox label="Keyframes" value={stats.keyframeCount} unit="unique" />
+          <StatBox label="Final"     value={stats.frameCount}    unit="kept" />
         </div>
       )}
 
@@ -222,7 +221,7 @@ export default function App() {
         <>
           <div className="inspector-header">
             <h2 className="inspector-header__title">Frame Inspector</h2>
-            <button className="btn-export" onClick={exportJSON}>
+            <button className="btn bg-transparent border border-green-500 rounded-[4px] px-3.5 py-1.5 text-green-500 text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-green-500/10" onClick={exportJSON}>
               ↓ Export JSON
             </button>
           </div>
