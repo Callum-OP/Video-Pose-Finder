@@ -205,7 +205,11 @@ export default function App() {
           </div>
           <div className="upload-zone__hint">MP4, MOV, WebM</div>
         </div>
-
+      </div>
+      <div className="upload-row flex items-center justify-between width-full">
+        {/* Left */}
+        <div></div>
+        {/* Right */}
         {lastFile && !isProcessing && (
           <button
             className="btn bg-transparent border border-indigo-500 rounded-[4px] px-3.5 py-1.5 text-indigo-500 text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-indigo-500/10 whitespace-nowrap"
