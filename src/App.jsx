@@ -111,7 +111,12 @@ export default function App() {
 
       {/* Settings panel */}
       <div className="settings">
-        <div className="settings__title">Extraction settings</div>
+        <div className="settings__title-row">
+          <span className="settings__title">extraction settings</span>
+          <button className=" border-rose-500 rounded text-rose-700" onClick={() => setSettings(DEFAULT_SETTINGS)}>
+            Reset Defaults
+          </button>
+        </div>
         <div className="settings__grid">
 
           <div className="setting">

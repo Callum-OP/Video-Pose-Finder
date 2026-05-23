@@ -1,5 +1,6 @@
+@import "tailwindcss";
+
 *, *::before, *::after {
-  box-sizing: border-box;
   margin: 0;
   padding: 0;
 }
@@ -15,7 +16,7 @@
   --green:     #39e8a0;
   --green-lo:  rgba(57, 232, 160, 0.12);
   --amber:     #f5a623;
-  --red:       #ff4d6d;
+  --red:       #ef4444;
   --text-1:    #eeeef5;
   --text-2:    #8888aa;
   --text-3:    #4a4a6a;
