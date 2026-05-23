@@ -194,6 +194,19 @@ input[type='range'] {
   font-size: 12px;
 }
 
+/* ── Upload row ── */
+.upload-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.upload-row .upload-zone {
+  flex: 1;
+  margin-bottom: 0;
+}
+
 /* ── Error banner ── */
 .error-banner {
   background: rgba(255, 77, 109, 0.08);

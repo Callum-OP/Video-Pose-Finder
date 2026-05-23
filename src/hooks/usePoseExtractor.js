@@ -74,21 +74,29 @@ function subsampleFrames(frames, maxFrames) {
   return Array.from({ length: maxFrames }, (_, i) => frames[Math.round(i * step)])
 }
 
-
 export function usePoseExtractor() {
   const landmarkerRef = useRef(null)
-  const [status, setStatus]   = useState('idle')
+  const visionRef = useRef(null)
+  const [status, setStatus] = useState('idle')
   const [progress, setProgress] = useState(0)
-  const [frames, setFrames]   = useState([])
-  const [stats, setStats]     = useState(null)
-  const [error, setError]     = useState(null)
+  const [frames, setFrames] = useState([])
+  const [stats, setStats] = useState(null)
+  const [error, setError] = useState(null)
 
-  async function ensureLandmarker() {
-    if (landmarkerRef.current) return landmarkerRef.current
-    setStatus('loading-model')
+  async function createLandmarker() {
+    // Load the WASM fileset once and cache it
+    if (!visionRef.current) {
+      setStatus('loading-model')
+      visionRef.current = await FilesetResolver.forVisionTasks(WASM_URL)
+    }
 
-    const vision = await FilesetResolver.forVisionTasks(WASM_URL)
-    const landmarker = await PoseLandmarker.createFromOptions(vision, {
+    // Always create a fresh landmarker so its internal timestamp counter resets
+    if (landmarkerRef.current) {
+      landmarkerRef.current.close()
+      landmarkerRef.current = null
+    }
+
+    const landmarker = await PoseLandmarker.createFromOptions(visionRef.current, {
       baseOptions: {
         modelAssetPath: MODEL_URL,
         delegate: 'GPU',
@@ -115,7 +123,7 @@ export function usePoseExtractor() {
 
     let landmarker
     try {
-      landmarker = await ensureLandmarker()
+      landmarker = await createLandmarker()
     } catch (e) {
       setError('Failed to load MediaPipe model. Check your internet connection.')
       setStatus('error')

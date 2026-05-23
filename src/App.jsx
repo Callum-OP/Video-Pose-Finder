@@ -6,9 +6,9 @@ import './App.css'
 const STATUS_COLOR = {
   idle:            '#4a4a6a',
   'loading-model': '#f5a623',
-  processing:      '#7c6cff',
-  done:            '#39e8a0',
-  error:           '#ff4d6d',
+  processing:      '#6366f1',
+  done:            '#22c55e',
+  error:           '#ef4444',
 }
 
 const STATUS_LABEL = {
@@ -43,6 +43,7 @@ export default function App() {
   const { processVideo, status, progress, frames, stats, error } = usePoseExtractor()
   const [dragOver, setDragOver] = useState(false)
   const [settings, setSettings] = useState(DEFAULT_SETTINGS)
+  const [lastFile, setLastFile] = useState(null)
   const inputRef = useRef(null)
 
   function setSetting(key, value) {
@@ -51,7 +52,10 @@ export default function App() {
 
   function handleFile(file) {
     if (!file || !file.type.startsWith('video/')) return
+      setLastFile(file)
     processVideo(file, settings)
+    // Reset input so the same file can be re-selected
+    if (inputRef.current) inputRef.current.value = ''
   }
 
   function handleDrop(e) {
@@ -144,7 +148,7 @@ export default function App() {
               onChange={(e) => setSetting('confidenceThreshold', Number(e.target.value))}
             />
             <span className="setting__hint">
-              Drop frames where the positions of joint are uncertain
+              Drop frames where the positions of joint are uncertain — higher = fewer, more accurate frames
             </span>
           </div>
 
@@ -172,7 +176,7 @@ export default function App() {
               onChange={(e) => setSetting('maxFrames', Number(e.target.value))}
             />
             <span className="setting__hint">
-              Hard frame cap — evenly subsamples if keyframes still exceed this
+              Hard frame cap — spreads frames evenly if total number of keyframes exceeds this cap
             </span>
           </div>
 
@@ -180,27 +184,38 @@ export default function App() {
       </div>
 
       {/* Upload zone */}
-      <div
-        className={uploadZoneClass}
-        onClick={() => !isProcessing && inputRef.current?.click()}
-        onDrop={handleDrop}
-        onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
-        onDragLeave={() => setDragOver(false)}
-      >
-        <input
-          ref={inputRef}
-          type="file"
-          accept="video/*"
-          style={{ display: 'none' }}
-          onChange={(e) => handleFile(e.target.files[0])}
-        />
-        <div className="upload-zone__icon">⬆</div>
-        <div className="upload-zone__label">
-          {isProcessing ? 'Processing…' : 'Drop a video or click to upload'}
+      <div className="upload-row">
+        <div
+          className={uploadZoneClass}
+          onClick={() => !isProcessing && inputRef.current?.click()}
+          onDrop={handleDrop}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+          onDragLeave={() => setDragOver(false)}
+        >
+          <input
+            ref={inputRef}
+            type="file"
+            accept="video/*"
+            style={{ display: 'none' }}
+            onChange={(e) => handleFile(e.target.files[0])}
+          />
+          <div className="upload-zone__icon">⬆</div>
+          <div className="upload-zone__label">
+            {isProcessing ? 'Processing…' : 'Drop a video or click to upload'}
+          </div>
+          <div className="upload-zone__hint">MP4, MOV, WebM</div>
         </div>
-        <div className="upload-zone__hint">MP4, MOV, WebM</div>
-      </div>
 
+        {lastFile && !isProcessing && (
+          <button
+            className="btn bg-transparent border border-indigo-500 rounded-[4px] px-3.5 py-1.5 text-indigo-500 text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-indigo-500/10 whitespace-nowrap"
+            onClick={() => processVideo(lastFile, settings)}
+          >
+            ↺ Rescan
+          </button>
+        )}
+      </div>
+      
       {/* Error */}
       {error && (
         <div className="error-banner">{error}</div>
