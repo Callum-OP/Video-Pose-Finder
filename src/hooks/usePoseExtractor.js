@@ -177,6 +177,7 @@ export function usePoseExtractor() {
       tCtx.drawImage(video, 0, 0, 160, 90)
       const thumbnail = thumbCanvas.toDataURL('image/jpeg', 0.6)
 
+      // Use a low confidence threshold for pre-scan
       const persons = result.landmarks
         .map(normaliseLandmarks)
         .filter((lms) => avgConfidence(lms) >= 0.4)
@@ -196,17 +197,19 @@ export function usePoseExtractor() {
     URL.revokeObjectURL(video.src)
     setScanFrames(results)
 
-    // If only one person ever detected across entire video, skip selection
-    const maxSeen = Math.max(...results.map((f) => f.persons.length), 0)
+    // Count the maximum number of distinct people seen in any single frame
+    const maxSeen = results.reduce((max, f) => Math.max(max, f.persons.length), 0)
+
     if (maxSeen <= 1) {
-      // Auto-proceed with no seed — single person video
+      // Only one person (or no one) detected across the whole video —
+      // skip selection and go straight to full extraction with no seed
       processVideo(file, DEFAULT_SETTINGS, null)
     } else {
       setStatus('select-person')
     }
   }, [])
 
-  // ── Step 2: full extraction, optionally seeded to a specific person ────────
+  // ── Full extraction, optionally seeded to a specific person ────────
   // seed = { x, y } normalised hip center of the chosen person, or null
   const processVideo = useCallback(async (file, settings = DEFAULT_SETTINGS, seed) => {
     setError(null)
