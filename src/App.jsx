@@ -48,6 +48,8 @@ export default function App() {
   const [dragOver, setDragOver] = useState(false)
   const [settings, setSettings] = useState(DEFAULT_SETTINGS)
   const [lastFile, setLastFile] = useState(null)
+  const [showModal, setShowModal] = useState(false)
+  const pendingFileRef = useRef(null)
   const inputRef = useRef(null)
 
   function setSetting(key, value) {
@@ -56,9 +58,23 @@ export default function App() {
 
   function handleFile(file) {
     if (!file || !file.type.startsWith('video/')) return
+    pendingFileRef.current = file
+    setShowModal(true)
+    if (inputRef.current) inputRef.current.value = ''
+  }
+
+  function handleSinglePerson() {
+    const file = pendingFileRef.current
+    setShowModal(false)
+    setLastFile(file)
+    processVideo(file, settings, null)
+  }
+
+  function handleMultiPerson() {
+    const file = pendingFileRef.current
+    setShowModal(false)
     setLastFile(file)
     preScan(file)
-    if (inputRef.current) inputRef.current.value = ''
   }
 
   function handleDrop(e) {
@@ -220,13 +236,40 @@ export default function App() {
         <div className="flex justify-end mb-6">
           <button
             className="btn bg-transparent border border-indigo-500 rounded-[4px] px-3.5 py-1.5 text-indigo-500 text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-indigo-500/10"
-            onClick={() => preScan(lastFile)}
+            onClick={() => { pendingFileRef.current = lastFile; setShowModal(true) }}
           >
             ↺ Rescan
           </button>
         </div>
       )}
       <br></br>
+
+      {/* Modal to be shown immediately after file drop */}
+      {showModal && (
+        <div className="modal-overlay" onClick={() => setShowModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal__title">Are there several people in this video?</div>
+            <p className="modal__desc">
+              Single person videos process faster and more accurately.<br />
+              Choose multi-person to manually select who to track.
+            </p>
+            <div className="modal__actions">
+              <button
+                className="btn bg-transparent border border-[#39e8a0] rounded-[4px] px-5 py-2 text-[#39e8a0] text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-[#39e8a0]/10"
+                onClick={handleSinglePerson}
+              >
+                Just one person
+              </button>
+              <button
+                className="btn bg-transparent border border-[#7c6cff] rounded-[4px] px-5 py-2 text-[#7c6cff] text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-[#7c6cff]/10"
+                onClick={handleMultiPerson}
+              >
+                Multiple people
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Error */}
       {error && <div className="error-banner">{error}</div>}
