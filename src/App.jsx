@@ -195,7 +195,7 @@ export default function App() {
               <span className="setting__label">Max frames</span>
               <span className="setting__value">{settings.maxFrames}</span>
             </div>
-            <input type="range" min={10} max={200} step={5}
+            <input type="range" min={10} max={1000} step={5}
               value={settings.maxFrames}
               onChange={(e) => setSetting('maxFrames', Number(e.target.value))}
             />
