@@ -28,12 +28,12 @@ export const NAMED_JOINTS = {
   27: 'l_ankle',    28: 'r_ankle',
 }
 
-// These are the settings the user will be able to adjust in the UI — they control the quality/time tradeoff of the extraction
+// These are the default settings the user will be able to adjust them in the UI later
 export const DEFAULT_SETTINGS = {
-  captureFps:          12,   // Samples per second taken from the video
+  captureFps:          30,   // Samples per second taken from the video
   confidenceThreshold: 0.5,  // Min avg landmark visibility to keep a frame
   keyframeThreshold:   0.04, // Min avg joint movement (0–1 normalised) to keep a frame
-  maxFrames:           60,   // Hard cap on final frame count
+  maxFrames:           200,  // Hard cap on final frame count
 }
 
 export const PERSON_COLORS = ['#7c6cff', '#39e8a0', '#f5a623', '#ff4d6d']
