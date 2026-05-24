@@ -19,6 +19,10 @@ Could have an advanced option that lets the user move or place the skeleton wher
 
 Maybe add a cancel button when processing? as well as rescan? In case user wants to change settings but already began provessing.
 
+Python backend that uses Gemini AI to tidy up the pose data, filling in missing limbs, fixing innaccuracies and other tasks to ensure that the final pose sequence is complete and usable.
+
+Save pose sequences using MongoDB? Then the user can access them whenever they want. Would also be useful to save settings.
+
 Even before AI gets involved it might be worth seeing could the raw pose data be exported as something that can be used in csp or is the backend required for that? It might be possible to export a raw untidy version of the data in JavaScript. It also means that I could test the data, before and after.
 
 Either move the select a person section and even the stats just above upload file so the user can see it immediately or maybe simply make the browser automatically scroll down to select person or stats section once loaded.
