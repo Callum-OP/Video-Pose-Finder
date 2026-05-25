@@ -2,7 +2,6 @@ import { useRef, useState } from 'react'
 import { usePoseExtractor, DEFAULT_SETTINGS } from './hooks/usePoseExtractor'
 import FrameInspector from './components/FrameInspector'
 import PersonSelector from './components/PersonSelector'
-import { exportBVH } from './utils/exportBVH'
 import './App.css'
 
 const STATUS_COLOR = {
@@ -68,8 +67,7 @@ export default function App() {
     const file = pendingFileRef.current
     setShowModal(false)
     setLastFile(file)
-    fileRef.current = file
-    processVideo(null, settings)
+    processVideo(file, settings, null)
   }
 
   function handleMultiPerson() {
@@ -87,7 +85,7 @@ export default function App() {
 
   // Called by PersonSelector when user clicks a skeleton
   function handlePersonSelected(seed) {
-    processVideo(seed, settings)
+    processVideo(fileRef.current, settings, seed)
   }
 
   function exportJSON() {
@@ -299,20 +297,12 @@ export default function App() {
         <>
           <div className="inspector-header">
             <h2 className="inspector-header__title">Frame Inspector</h2>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button
-                className="btn bg-transparent border border-[#f5a623] rounded-[4px] px-3.5 py-1.5 text-[#f5a623] text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-[#f5a623]/10"
-                onClick={() => exportBVH(frames, stats.captureFps)}
-              >
-                ↓ Export Raw BVH
-              </button>
-              <button
-                className="btn bg-transparent border border-green-500 rounded-[4px] px-3.5 py-1.5 text-green-500 text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-green-500/10"
-                onClick={exportJSON}
-              >
-                ↓ Export JSON
-              </button>
-            </div>
+            <button
+              className="btn bg-transparent border border-green-500 rounded-[4px] px-3.5 py-1.5 text-green-500 text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-green-500/10"
+              onClick={exportJSON}
+            >
+              ↓ Export JSON
+            </button>
           </div>
           <div className="inspector-card">
             <FrameInspector frames={frames} stats={stats} />
