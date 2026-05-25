@@ -1,5 +1,6 @@
 import { useRef, useState, useCallback } from 'react'
 import { PoseLandmarker, FilesetResolver } from '@mediapipe/tasks-vision'
+import { resetIKCache } from '../utils/ikSolver.js'
 
 // MediaPipe landmark indices for the connections that'll be drawn
 export const POSE_CONNECTIONS = [
@@ -91,10 +92,11 @@ function normaliseLandmarks(rawLms) {
   }))
 }
 
-
+// Main Public Hook
 export function usePoseExtractor() {
   const landmarkerRef = useRef(null)
   const visionRef = useRef(null)
+  const scrubVideoRef = useRef(null)
   const fileRef = useRef(null)
 
   const [status, setStatus] = useState('idle')
@@ -102,7 +104,10 @@ export function usePoseExtractor() {
   const [frames, setFrames] = useState([])
   const [stats, setStats] = useState(null)
   const [error, setError] = useState(null)
-  // Pre-scan results, sparse frames each with all detected persons
+  const [duration, setDuration] = useState(0)
+  // Detected persons at the current scrub position
+  const [scrubPersons, setScrubPersons] = useState([])
+  // Storage array for the filmstrip/pre-scan view mode
   const [scanFrames, setScanFrames] = useState([])
 
   async function createLandmarker(numPoses) {
@@ -118,22 +123,29 @@ export function usePoseExtractor() {
       baseOptions: { modelAssetPath: MODEL_URL, delegate: 'GPU' },
       runningMode: 'VIDEO',
       numPoses,
-      minPoseDetectionConfidence: 0.5,
-      minPosePresenceConfidence: 0.5,
-      minTrackingConfidence: 0.5,
+      minPoseDetectionConfidence: 0.4,
+      minPosePresenceConfidence: 0.4,
+      minTrackingConfidence: 0.4,
     })
     landmarkerRef.current = landmarker
     return landmarker
   }
 
-  // ── Quick 1fps scan to show all people across the video ───────────
-  const preScan = useCallback(async (file) => {
+  // ── Load video and landmarker, enter scrub mode ────────────────────
+  const loadVideo = useCallback(async (file) => {
     setError(null)
     setFrames([])
-    setScanFrames([])
     setStats(null)
     setProgress(0)
+    setScrubPersons([])
+    setScanFrames([])
     fileRef.current = file
+
+    // Clean up any previous scrub video
+    if (scrubVideoRef.current) {
+      URL.revokeObjectURL(scrubVideoRef.current.src)
+      scrubVideoRef.current = null
+    }
 
     let landmarker
     try {
@@ -153,23 +165,64 @@ export function usePoseExtractor() {
       video.onerror = reject
     })
 
-    const duration    = video.duration
-    const scanFps     = 1   // 1 frame per second is enough to show who's in the video
+    scrubVideoRef.current = video
+    setDuration(video.duration)
+    setStatus('select-person')
+
+    await detectAtTime(0, landmarker, video) // Run detection on frame 0 immediately so canvas isn't blank
+  }, [])
+
+  // ── Quick automated scan alternative to step selection ───────────
+  const preScan = useCallback(async (file) => {
+    setError(null)
+    setFrames([])
+    setScanFrames([])
+    setStats(null)
+    setProgress(0)
+    setScrubPersons([])
+    fileRef.current = file
+
+    if (scrubVideoRef.current) {
+      URL.revokeObjectURL(scrubVideoRef.current.src)
+      scrubVideoRef.current = null
+    }
+
+    let landmarker
+    try {
+      landmarker = await createLandmarker(4)
+    } catch (e) {
+      setError('Failed to load MediaPipe model. Check your internet connection.')
+      setStatus('error')
+      return
+    }
+
+    const video = document.createElement('video')
+    video.src = URL.createObjectURL(file)
+    video.muted = true
+    video.playsInline = true
+    await new Promise((resolve, reject) => {
+      video.onloadedmetadata = resolve
+      video.onerror = reject
+    })
+
+    const videoDuration = video.duration
+    setDuration(videoDuration)
+    
+    const scanFps     = 1 
     const frameStep   = 1 / scanFps
-    const totalFrames = Math.ceil(duration * scanFps)
+    const totalFrames = Math.ceil(videoDuration * scanFps)
 
     setStatus('prescanning')
 
     const results = []
     let frameIndex = 0
 
-    for (let t = 0; t < duration; t += frameStep) {
+    for (let t = 0; t < videoDuration; t += frameStep) {
       video.currentTime = t
       await new Promise((r) => { video.onseeked = r })
 
       const result = landmarker.detectForVideo(video, Math.round(t * 1000))
 
-      // Capture a thumbnail of this frame for the filmstrip
       const thumbCanvas = document.createElement('canvas')
       thumbCanvas.width  = 160
       thumbCanvas.height = 90
@@ -177,7 +230,6 @@ export function usePoseExtractor() {
       tCtx.drawImage(video, 0, 0, 160, 90)
       const thumbnail = thumbCanvas.toDataURL('image/jpeg', 0.6)
 
-      // Use a low confidence threshold for pre-scan
       const persons = result.landmarks
         .map(normaliseLandmarks)
         .filter((lms) => avgConfidence(lms) >= 0.4)
@@ -197,31 +249,54 @@ export function usePoseExtractor() {
     URL.revokeObjectURL(video.src)
     setScanFrames(results)
 
-    // Count the maximum number of distinct people seen in any single frame
     const maxSeen = results.reduce((max, f) => Math.max(max, f.persons.length), 0)
 
     if (maxSeen <= 1) {
-      // Only one person (or no one) detected across the whole video —
-      // skip selection and go straight to full extraction with no seed
-      processVideo(file, DEFAULT_SETTINGS, null)
+      processVideo(null, DEFAULT_SETTINGS)
     } else {
       setStatus('select-person')
     }
   }, [])
 
-  // ── Full extraction, optionally seeded to a specific person ────────
-  // seed = { x, y } normalised hip center of the chosen person, or null
-  const processVideo = useCallback(async (file, settings = DEFAULT_SETTINGS, seed) => {
+  // ── Detect at a specific timestamp (called by the scrubber on drag) ───────
+  const detectAtTime = useCallback(async (timeS, landmarker, video) => {
+    const lm  = landmarker  ?? landmarkerRef.current
+    const vid = video       ?? scrubVideoRef.current
+    if (!lm || !vid) return
+
+    vid.currentTime = timeS
+    await new Promise((r) => { vid.onseeked = r })
+
+    const result = lm.detectForVideo(vid, Math.round(timeS * 1000))
+    const persons = result.landmarks
+      .map(normaliseLandmarks)
+      .filter((lms) => avgConfidence(lms) >= 0.25)
+
+    setScrubPersons(persons)
+  }, [])
+
+  // ── Full extraction, user picked a person ───
+  const processVideo = useCallback(async (seed, settings = DEFAULT_SETTINGS) => {
+    const file = fileRef.current
+    if (!file) return
+
     setError(null)
     setFrames([])
     setStats(null)
     setProgress(0)
+    setScrubPersons([])
+    resetIKCache()
+
+    if (scrubVideoRef.current) {
+      URL.revokeObjectURL(scrubVideoRef.current.src)
+      scrubVideoRef.current = null
+    }
 
     const { captureFps, confidenceThreshold, keyframeThreshold, maxFrames } = settings
 
     let landmarker
+
     try {
-      // Single person from here on — numPoses: 1 is reliable
       landmarker = await createLandmarker(1)
     } catch (e) {
       setError('Failed to load MediaPipe model. Check your internet connection.')
@@ -238,21 +313,17 @@ export function usePoseExtractor() {
       video.onerror = reject
     })
 
-    const duration    = video.duration
+    const videoDuration = video.duration
     const frameStep   = 1 / captureFps
-    const totalFrames = Math.floor(duration * captureFps)
+    const totalFrames = Math.floor(videoDuration * captureFps)
 
     setStatus('processing')
 
-    // When a seed is given we skip frames until MediaPipe finds someone
-    // near that position — this locks it onto the right person from the start
-    let lastKnownCenter = seed  // { x, y } or null
-    let seedLocked      = false // true once we've confirmed the right person
-
+    let seedLocked = seed === null
     const captured = []
     let frameIndex = 0
 
-    for (let t = 0; t < duration; t += frameStep) {
+    for (let t = 0; t < videoDuration; t += frameStep) {
       video.currentTime = t
       await new Promise((r) => { video.onseeked = r })
 
@@ -260,24 +331,22 @@ export function usePoseExtractor() {
 
       if (result.landmarks.length > 0) {
         const landmarks = normaliseLandmarks(result.landmarks[0])
+        const worldLandmarks = result.worldLandmarks?.[0]
+          ? normaliseLandmarks(result.worldLandmarks[0])
+          : null
 
         if (avgConfidence(landmarks) >= confidenceThreshold) {
-          // If we have a seed and haven't locked yet, verify this is the right person
-          // by checking the first detected pose is close to where we clicked
           if (seed && !seedLocked) {
             const center = hipCenter(landmarks)
             if (center && dist2D(center, seed) < 0.25) {
               seedLocked = true
-            } else if (center && dist2D(center, seed) >= 0.25) {
-              // Wrong person detected first — skip this frame
+            } else {
               frameIndex++
               setProgress(Math.round((frameIndex / totalFrames) * 100))
               continue
             }
           }
-
-          lastKnownCenter = hipCenter(landmarks) ?? lastKnownCenter
-          captured.push({ frameIndex, timeMs: Math.round(t * 1000), landmarks })
+          captured.push({ frameIndex, timeMs: Math.round(t * 1000), landmarks, worldLandmarks })
         }
       }
 
@@ -288,7 +357,6 @@ export function usePoseExtractor() {
 
     URL.revokeObjectURL(video.src)
 
-    // Keyframe filter
     const keyframes = []
     for (const frame of captured) {
       if (keyframes.length === 0) { keyframes.push(frame); continue }
@@ -299,13 +367,12 @@ export function usePoseExtractor() {
     }
 
     const finalFrames = subsampleFrames(keyframes, maxFrames)
-
     setFrames(finalFrames)
     setStats({
       frameCount:    finalFrames.length,
       capturedCount: captured.length,
       keyframeCount: keyframes.length,
-      duration:      duration.toFixed(2),
+      duration:      videoDuration.toFixed(2),
       captureFps,
       totalSampled:  totalFrames,
     })
@@ -313,7 +380,9 @@ export function usePoseExtractor() {
   }, [])
 
   return {
+    loadVideo,
     preScan,
+    detectAtTime,
     processVideo,
     status,
     progress,
@@ -321,6 +390,8 @@ export function usePoseExtractor() {
     scanFrames,
     stats,
     error,
+    duration,
+    scrubPersons,
     fileRef,
   }
 }
