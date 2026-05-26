@@ -32,9 +32,9 @@ export const NAMED_JOINTS = {
 // These are the default settings the user will be able to adjust them in the UI later
 export const DEFAULT_SETTINGS = {
   captureFps:          30,   // Samples per second taken from the video
-  confidenceThreshold: 0.5,  // Min avg landmark visibility to keep a frame
-  keyframeThreshold:   0.04, // Min avg joint movement (0–1 normalised) to keep a frame
-  maxFrames:           200,  // Hard cap on final frame count
+  confidenceThreshold: 0.5,  // Min accepted amount of visibility to keep a frame/pose
+  keyframeThreshold:   0.04, // Min accepted amount of joint movement (0–1 normalised) to keep a frame/pose
+  maxFrames:           200,  // The number of frames/poses to keep
 }
 
 export const PERSON_COLORS = ['#7c6cff', '#39e8a0', '#f5a623', '#ff4d6d']
@@ -54,13 +54,9 @@ function avgConfidence(landmarks) {
 function poseDiff(landmarksA, landmarksB) {
   let total = 0
   for (const i of KEY_JOINT_INDICES) {
-    const a = landmarksA[i]
-    const b = landmarksB[i]
+    const a = landmarksA[i]; const b = landmarksB[i]
     if (!a || !b) continue
-    const dx = a.x - b.x
-    const dy = a.y - b.y
-    const dz = a.z - b.z
-    total += Math.sqrt(dx * dx + dy * dy + dz * dz)
+    total += Math.sqrt((a.x - b.x)**2 + (a.y - b.y)**2 + (a.z - b.z)**2)
   }
   return total / KEY_JOINT_INDICES.length
 }
@@ -73,15 +69,12 @@ function subsampleFrames(frames, maxFrames) {
 
 // Hip midpoint — used as the seed position for tracking
 export function hipCenter(landmarks) {
-  const l = landmarks[23]
-  const r = landmarks[24]
+  const l = landmarks[23]; const r = landmarks[24]
   if (!l || !r) return null
   return { x: (l.x + r.x) / 2, y: (l.y + r.y) / 2 }
 }
 
-function dist2D(a, b) {
-  return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2)
-}
+function dist2D(a, b) { return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2) }
 
 function normaliseLandmarks(rawLms) {
   return rawLms.map((lm) => ({
@@ -98,6 +91,7 @@ export function usePoseExtractor() {
   const visionRef = useRef(null)
   const scrubVideoRef = useRef(null)
   const fileRef = useRef(null)
+  const isCancelledRef = useRef(false)
 
   const [status, setStatus] = useState('idle')
   const [progress, setProgress] = useState(0)
@@ -109,6 +103,33 @@ export function usePoseExtractor() {
   const [scrubPersons, setScrubPersons] = useState([])
   // Storage array for the filmstrip/pre-scan view mode
   const [scanFrames, setScanFrames] = useState([])
+
+  const selectPersonRef = useRef(null)
+  const statsSummaryRef = useRef(null)
+
+  const scrollToRef = (targetRef) => {
+    setTimeout(() => {
+      if (targetRef.current) {
+        targetRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
+    }, 150)
+  }
+
+  const cancelProcessing = useCallback(() => {
+    isCancelledRef.current = true
+    setError(null)
+    setFrames([])
+    setStats(null)
+    setProgress(0)
+    setScrubPersons([])
+    setScanFrames([])
+    fileRef.current = null
+    if (scrubVideoRef.current) {
+      URL.revokeObjectURL(scrubVideoRef.current.src)
+      scrubVideoRef.current = null
+    }
+    setStatus('idle')
+  }, [])
 
   async function createLandmarker(numPoses) {
     if (!visionRef.current) {
@@ -133,6 +154,7 @@ export function usePoseExtractor() {
 
   // ── Load video and landmarker, enter scrub mode ────────────────────
   const loadVideo = useCallback(async (file) => {
+    isCancelledRef.current = false
     setError(null)
     setFrames([])
     setStats(null)
@@ -149,7 +171,7 @@ export function usePoseExtractor() {
 
     let landmarker
     try {
-      landmarker = await createLandmarker(4) // detect up to 4 people
+      landmarker = await createLandmarker(4)
     } catch (e) {
       setError('Failed to load MediaPipe model. Check your internet connection.')
       setStatus('error')
@@ -158,8 +180,7 @@ export function usePoseExtractor() {
 
     const video = document.createElement('video')
     video.src = URL.createObjectURL(file)
-    video.muted = true
-    video.playsInline = true
+    video.muted = true; video.playsInline = true
     await new Promise((resolve, reject) => {
       video.onloadedmetadata = resolve
       video.onerror = reject
@@ -169,11 +190,13 @@ export function usePoseExtractor() {
     setDuration(video.duration)
     setStatus('select-person')
 
-    await detectAtTime(0, landmarker, video) // Run detection on frame 0 immediately so canvas isn't blank
+    await detectAtTime(0, landmarker, video)
+    scrollToRef(selectPersonRef)
   }, [])
 
   // ── Quick automated scan alternative to step selection ───────────
   const preScan = useCallback(async (file) => {
+    isCancelledRef.current = false
     setError(null)
     setFrames([])
     setScanFrames([])
@@ -198,8 +221,7 @@ export function usePoseExtractor() {
 
     const video = document.createElement('video')
     video.src = URL.createObjectURL(file)
-    video.muted = true
-    video.playsInline = true
+    video.muted = true; video.playsInline = true
     await new Promise((resolve, reject) => {
       video.onloadedmetadata = resolve
       video.onerror = reject
@@ -208,8 +230,8 @@ export function usePoseExtractor() {
     const videoDuration = video.duration
     setDuration(videoDuration)
     
-    const scanFps     = 1 
-    const frameStep   = 1 / scanFps
+    const scanFps = 1 
+    const frameStep = 1 / scanFps
     const totalFrames = Math.ceil(videoDuration * scanFps)
 
     setStatus('prescanning')
@@ -218,14 +240,19 @@ export function usePoseExtractor() {
     let frameIndex = 0
 
     for (let t = 0; t < videoDuration; t += frameStep) {
+      // Exit loop if user hits cancel
+      if (isCancelledRef.current) {
+        URL.revokeObjectURL(video.src)
+        return
+      }
+
       video.currentTime = t
       await new Promise((r) => { video.onseeked = r })
 
       const result = landmarker.detectForVideo(video, Math.round(t * 1000))
 
       const thumbCanvas = document.createElement('canvas')
-      thumbCanvas.width  = 160
-      thumbCanvas.height = 90
+      thumbCanvas.width = 160; thumbCanvas.height = 90
       const tCtx = thumbCanvas.getContext('2d')
       tCtx.drawImage(video, 0, 0, 160, 90)
       const thumbnail = thumbCanvas.toDataURL('image/jpeg', 0.6)
@@ -234,17 +261,15 @@ export function usePoseExtractor() {
         .map(normaliseLandmarks)
         .filter((lms) => avgConfidence(lms) >= 0.4)
 
-      results.push({
-        frameIndex,
-        timeMs: Math.round(t * 1000),
-        thumbnail,
-        persons,
-      })
+      results.push({ frameIndex, timeMs: Math.round(t * 1000), thumbnail, persons })
 
       frameIndex++
       setProgress(Math.round((frameIndex / totalFrames) * 100))
       if (frameIndex % 5 === 0) await new Promise((r) => setTimeout(r, 0))
     }
+
+    // Exit if user cancels
+    if (isCancelledRef.current) return
 
     URL.revokeObjectURL(video.src)
     setScanFrames(results)
@@ -255,13 +280,14 @@ export function usePoseExtractor() {
       processVideo(null, DEFAULT_SETTINGS)
     } else {
       setStatus('select-person')
+      scrollToRef(selectPersonRef)
     }
   }, [])
 
   // ── Detect at a specific timestamp (called by the scrubber on drag) ───────
   const detectAtTime = useCallback(async (timeS, landmarker, video) => {
-    const lm  = landmarker  ?? landmarkerRef.current
-    const vid = video       ?? scrubVideoRef.current
+    const lm = landmarker ?? landmarkerRef.current
+    const vid = video ?? scrubVideoRef.current
     if (!lm || !vid) return
 
     vid.currentTime = timeS
@@ -280,6 +306,7 @@ export function usePoseExtractor() {
     const file = fileRef.current
     if (!file) return
 
+    isCancelledRef.current = false
     setError(null)
     setFrames([])
     setStats(null)
@@ -306,15 +333,14 @@ export function usePoseExtractor() {
 
     const video = document.createElement('video')
     video.src = URL.createObjectURL(file)
-    video.muted = true
-    video.playsInline = true
+    video.muted = true; video.playsInline = true
     await new Promise((resolve, reject) => {
       video.onloadedmetadata = resolve
       video.onerror = reject
     })
 
     const videoDuration = video.duration
-    const frameStep   = 1 / captureFps
+    const frameStep = 1 / captureFps
     const totalFrames = Math.floor(videoDuration * captureFps)
 
     setStatus('processing')
@@ -324,6 +350,12 @@ export function usePoseExtractor() {
     let frameIndex = 0
 
     for (let t = 0; t < videoDuration; t += frameStep) {
+      // Exit if user cancels
+      if (isCancelledRef.current) {
+        URL.revokeObjectURL(video.src)
+        return
+      }
+
       video.currentTime = t
       await new Promise((r) => { video.onseeked = r })
 
@@ -331,9 +363,7 @@ export function usePoseExtractor() {
 
       if (result.landmarks.length > 0) {
         const landmarks = normaliseLandmarks(result.landmarks[0])
-        const worldLandmarks = result.worldLandmarks?.[0]
-          ? normaliseLandmarks(result.worldLandmarks[0])
-          : null
+        const worldLandmarks = result.worldLandmarks?.[0] ? normaliseLandmarks(result.worldLandmarks[0]) : null
 
         if (avgConfidence(landmarks) >= confidenceThreshold) {
           if (seed && !seedLocked) {
@@ -354,6 +384,9 @@ export function usePoseExtractor() {
       setProgress(Math.round((frameIndex / totalFrames) * 100))
       if (frameIndex % 10 === 0) await new Promise((r) => setTimeout(r, 0))
     }
+
+    // Exit if user cancels
+    if (isCancelledRef.current) return
 
     URL.revokeObjectURL(video.src)
 
@@ -377,6 +410,7 @@ export function usePoseExtractor() {
       totalSampled:  totalFrames,
     })
     setStatus('done')
+    scrollToRef(statsSummaryRef)
   }, [])
 
   return {
@@ -384,6 +418,7 @@ export function usePoseExtractor() {
     preScan,
     detectAtTime,
     processVideo,
+    cancelProcessing,
     status,
     progress,
     frames,
@@ -393,5 +428,7 @@ export function usePoseExtractor() {
     duration,
     scrubPersons,
     fileRef,
+    selectPersonRef,
+    statsSummaryRef,
   }
 }

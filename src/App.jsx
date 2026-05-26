@@ -39,11 +39,11 @@ function StatBox({ label, value, unit }) {
 
 export default function App() {
   const {
-    preScan, processVideo,
+    preScan, processVideo, cancelProcessing,
     status, progress,
     frames, scanFrames,
     stats, error,
-    fileRef,
+    fileRef, selectPersonRef, statsSummaryRef
   } = usePoseExtractor()
 
   const [dragOver, setDragOver] = useState(false)
@@ -127,7 +127,7 @@ export default function App() {
         <span className="status-bar__label" style={{ color: STATUS_COLOR[status] }}>
           {STATUS_LABEL[status]}
         </span>
-        {(isProcessing || isSelecting) && status !== 'select-person' && (
+        {isProcessing && (
           <div className="status-bar__track">
             <div className="status-bar__fill" style={{ width: `${progress}%` }} />
           </div>
@@ -156,6 +156,7 @@ export default function App() {
               <span className="setting__value">{settings.captureFps} fps</span>
             </div>
             <input type="range" min={1} max={30} step={1}
+              disabled={isProcessing}
               value={settings.captureFps}
               onChange={(e) => setSetting('captureFps', Number(e.target.value))}
             />
@@ -170,6 +171,7 @@ export default function App() {
               <span className="setting__value">{Math.round(settings.confidenceThreshold * 100)}%</span>
             </div>
             <input type="range" min={0.1} max={0.95} step={0.05}
+              disabled={isProcessing}
               value={settings.confidenceThreshold}
               onChange={(e) => setSetting('confidenceThreshold', Number(e.target.value))}
             />
@@ -184,6 +186,7 @@ export default function App() {
               <span className="setting__value">{settings.keyframeThreshold.toFixed(2)}</span>
             </div>
             <input type="range" min={0.01} max={0.2} step={0.01}
+              disabled={isProcessing}
               value={settings.keyframeThreshold}
               onChange={(e) => setSetting('keyframeThreshold', Number(e.target.value))}
             />
@@ -198,6 +201,7 @@ export default function App() {
               <span className="setting__value">{settings.maxFrames}</span>
             </div>
             <input type="range" min={10} max={1000} step={5}
+              disabled={isProcessing}
               value={settings.maxFrames}
               onChange={(e) => setSetting('maxFrames', Number(e.target.value))}
             />
@@ -233,18 +237,26 @@ export default function App() {
         </div>
       </div>
 
-      {/* Rescan button */}
-      {lastFile && !isProcessing && !isSelecting && (
-        <div className="flex justify-end mb-6">
+      {/* Action Controls Row */}
+      <div className="flex justify-end gap-3 mb-6 min-h-[32px]">
+        {isProcessing && (
+          <button
+            className="btn bg-transparent border border-red-500 rounded-[4px] px-3.5 py-1.5 text-red-500 text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-red-500/10"
+            onClick={cancelProcessing}
+          >
+            ✕ Cancel
+          </button>
+        )}
+        {lastFile && !isProcessing && (
           <button
             className="btn bg-transparent border border-indigo-500 rounded-[4px] px-3.5 py-1.5 text-indigo-500 text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-indigo-500/10"
             onClick={() => { pendingFileRef.current = lastFile; setShowModal(true) }}
           >
             ↺ Rescan
           </button>
-        </div>
-      )}
-      <br></br>
+        )}
+      </div>
+      <br />
 
       {/* Modal to be shown immediately after file drop */}
       {showModal && (
@@ -273,26 +285,32 @@ export default function App() {
         </div>
       )}
 
-      {/* Error */}
+      {/* Error Output Banner */}
       {error && <div className="error-banner">{error}</div>}
 
       {/* Person selector filmstrip */}
-      {isSelecting && scanFrames.length > 0 && (
-        <PersonSelector
-          scanFrames={scanFrames}
-          onSelect={handlePersonSelected}
-        />
-      )}
+      <div ref={selectPersonRef}>
+        {isSelecting && scanFrames.length > 0 && (
+          <div id="select-person-section">
+            <PersonSelector
+              scanFrames={scanFrames}
+              onSelect={handlePersonSelected}
+            />
+          </div>
+        )}
+      </div>
 
       {/* Stats */}
-      {stats && (
-        <div className="stats-row">
-          <StatBox label="Sampled"   value={stats.totalSampled}  unit={`@ ${stats.captureFps}fps`} />
-          <StatBox label="Confident" value={stats.capturedCount} unit="frames" />
-          <StatBox label="Keyframes" value={stats.keyframeCount} unit="unique" />
-          <StatBox label="Final"     value={stats.frameCount}    unit="kept" />
-        </div>
-      )}
+      <div ref={statsSummaryRef}>
+        {stats && (
+          <div id="stats-summary-section" className="stats-row">
+            <StatBox label="Sampled"   value={stats.totalSampled}  unit={`@ ${stats.captureFps}fps`} />
+            <StatBox label="Confident" value={stats.capturedCount} unit="frames" />
+            <StatBox label="Keyframes" value={stats.keyframeCount} unit="unique" />
+            <StatBox label="Final"     value={stats.frameCount}    unit="kept" />
+          </div>
+        )}
+      </div>
 
       {/* Frame inspector */}
       {frames.length > 0 && (
