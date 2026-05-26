@@ -17,11 +17,7 @@ Trying to track several people at the same time is unreliable, so this app can o
 # Features To Consider
 Could have an advanced option that lets the user move or place the skeleton where it should be if that helps the program that tracks it know where to start.
 
-Maybe add a cancel button when processing? as well as rescan? In case user wants to change settings but already began processing.
-
 Python backend that uses Gemini AI to tidy up the pose data, filling in missing limbs, fixing innaccuracies and other tasks to ensure that the final pose sequence is complete and usable.
 
 Save pose sequences using MongoDB? Then the user can access them whenever they want. Would also be useful to save settings.
-
-Either move the select a person section and even the stats just above upload file so the user can see it immediately or maybe simply make the browser automatically scroll down to select person or stats section once loaded.
 
