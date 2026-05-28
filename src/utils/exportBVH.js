@@ -28,6 +28,31 @@ function rotateAround(vec, ax, rad) {
   return add(add(scale(vec, c), scale(cross(ax, vec), s)), scale(ax, dot(ax, vec) * (1-c)))
 }
 
+// ── Bone length cache ─────────────────────────────────────────────────────────
+// Lengths are measured from the first frame and locked for the entire export.
+let cachedLengths = null
+
+function resetBoneLengthCache() {
+  cachedLengths = null
+}
+
+function getBoneLengths(rawLKnee, rawRKnee, lAnkle, rAnkle,
+                        rawLElbow, rawRElbow, lWrist, rWrist,
+                        leftHip, rightHip, leftSho, rightSho) {
+  if (cachedLengths) return cachedLengths
+  cachedLengths = {
+    lThigh: len(sub(rawLKnee,  leftHip))   || 1,
+    rThigh: len(sub(rawRKnee,  rightHip))  || 1,
+    lShin:  len(sub(lAnkle,    rawLKnee))  || 1,
+    rShin:  len(sub(rAnkle,    rawRKnee))  || 1,
+    lUpper: len(sub(rawLElbow, leftSho))   || 1,
+    rUpper: len(sub(rawRElbow, rightSho))  || 1,
+    lFore:  len(sub(lWrist,    rawLElbow)) || 1,
+    rFore:  len(sub(rWrist,    rawRElbow)) || 1,
+  }
+  return cachedLengths
+}
+
 // ── Place knee correctly ───────────────────────────────
 function constrainKnee(hip, rawKnee, ankle, heel, toe, boneLenThigh, boneLenShin, pelvisFwd) {
   // Determine the hinge axis
@@ -158,15 +183,16 @@ function P(lms, worldLms) {
   const rawLElbow = mp(lms, w, 13)
   const rawRElbow = mp(lms, w, 14)
 
-  // Measure bone lengths from the raw positions
-  const lThighLen = len(sub(rawLKnee,  leftHip))   || 1
-  const rThighLen = len(sub(rawRKnee,  rightHip))  || 1
-  const lShinLen  = len(sub(lAnkle,    rawLKnee))  || 1
-  const rShinLen  = len(sub(rAnkle,    rawRKnee))  || 1
-  const lUpperLen = len(sub(rawLElbow, leftSho))   || 1
-  const rUpperLen = len(sub(rawRElbow, rightSho))  || 1
-  const lForeLen  = len(sub(lWrist,    rawLElbow)) || 1
-  const rForeLen  = len(sub(lWrist,    rawRElbow)) || 1
+  // Bone lengths, locked from first frame
+  const bl = getBoneLengths(
+    rawLKnee, rawRKnee, lAnkle, rAnkle,
+    rawLElbow, rawRElbow, lWrist, rWrist,
+    leftHip, rightHip, leftSho, rightSho
+  )
+  const lThighLen = bl.lThigh, rThighLen = bl.rThigh
+  const lShinLen  = bl.lShin,  rShinLen  = bl.rShin
+  const lUpperLen = bl.lUpper, rUpperLen = bl.rUpper
+  const lForeLen  = bl.lFore,  rForeLen  = bl.rFore
 
   // ── Pelvis forward axis ──────────────────────────────────────────────────
   // Derived from landmark geometry so it stays correct at any body angle.
