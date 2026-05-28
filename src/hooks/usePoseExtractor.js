@@ -1,6 +1,5 @@
 import { useRef, useState, useCallback } from 'react'
 import { PoseLandmarker, FilesetResolver } from '@mediapipe/tasks-vision'
-import { resetIKCache } from '../utils/ikSolver.js'
 
 // MediaPipe landmark indices for the connections that'll be drawn
 export const POSE_CONNECTIONS = [
@@ -312,7 +311,6 @@ export function usePoseExtractor() {
     setStats(null)
     setProgress(0)
     setScrubPersons([])
-    resetIKCache()
 
     if (scrubVideoRef.current) {
       URL.revokeObjectURL(scrubVideoRef.current.src)
