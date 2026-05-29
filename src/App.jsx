@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, useEffect } from 'react'
 import { usePoseExtractor, DEFAULT_SETTINGS } from './hooks/usePoseExtractor'
 import FrameInspector from './components/FrameInspector'
 import PersonSelector from './components/PersonSelector'
@@ -38,6 +38,10 @@ function StatBox({ label, value, unit }) {
 }
 
 export default function App() {
+  // Set up backend URL
+  const [enhancedMode, setEnhancedMode] = useState(false)
+  const [backendAvailable, setBackendAvailable] = useState(null)
+
   const {
     preScan, processVideo, cancelProcessing,
     status, progress,
@@ -100,6 +104,21 @@ export default function App() {
     URL.revokeObjectURL(url)
   }
 
+  async function exportEnhancedBVH() {
+    try {
+      const res = await fetch('http://localhost:8000/enhance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ frames }),
+      })
+      if (!res.ok) throw new Error(`Backend error: ${res.status}`)
+      const data = await res.json()
+      exportBVH(data.frames, stats.captureFps)
+    } catch (err) {
+      alert(`Enhanced export failed: ${err.message}\n\nMake sure the Python backend is running:\n  cd backend && python main.py`)
+    }
+  }
+
   const isProcessing = status === 'processing' || status === 'loading-model' || status === 'prescanning'
   const isSelecting  = status === 'select-person'
 
@@ -108,6 +127,12 @@ export default function App() {
     dragOver     ? 'upload-zone--drag' : '',
     isProcessing ? 'upload-zone--busy' : '',
   ].filter(Boolean).join(' ')
+
+  useEffect(() => {
+    fetch('http://localhost:8000/health')
+      .then(r => r.ok ? setBackendAvailable(true) : setBackendAvailable(false))
+      .catch(() => setBackendAvailable(false))
+  }, [])
 
   return (
     <div className="app">
@@ -317,20 +342,33 @@ export default function App() {
         <>
           <div className="inspector-header">
             <h2 className="inspector-header__title">Frame Inspector</h2>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button
-                className="btn bg-transparent border border-[#f5a623] rounded-[4px] px-3.5 py-1.5 text-[#f5a623] text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-[#f5a623]/10"
-                onClick={() => exportBVH(frames, stats.captureFps)}
-              >
-                ↓ Export Raw BVH
-              </button>
-              <button
-                className="btn bg-transparent border border-green-500 rounded-[4px] px-3.5 py-1.5 text-green-500 text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-green-500/10"
-                onClick={exportJSON}
-              >
-                ↓ Export JSON
-              </button>
-            </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  className="btn bg-transparent border border-[#f5a623] rounded-[4px] px-3.5 py-1.5 text-[#f5a623] text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-[#f5a623]/10"
+                  onClick={() => exportBVH(frames, stats.captureFps)}
+                  >
+                  ↓ Export BVH
+                </button>
+                {backendAvailable === true && (
+                <button
+                  className="btn bg-transparent border border-purple-400 rounded-[4px] px-3.5 py-1.5 text-purple-400 text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-purple-400/10"
+                  onClick={exportEnhancedBVH}
+                  >
+                    ↓ Export Enhanced BVH ✦
+                  </button>
+                )}
+                {backendAvailable === false && (
+                  <span className="text-xs font-mono text-gray-500 self-center">
+                    (Enhanced mode: start backend for ↑ quality)
+                  </span>
+                )}
+                <button
+                  className="btn bg-transparent border border-green-500 rounded-[4px] px-3.5 py-1.5 text-green-500 text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-green-500/10"
+                  onClick={exportJSON}
+                  >
+                  ↓ Export JSON
+                </button>
+              </div>
           </div>
           <div className="inspector-card">
             <FrameInspector frames={frames} stats={stats} />
