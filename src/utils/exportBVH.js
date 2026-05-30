@@ -366,6 +366,48 @@ function buildHierarchy(off) {
   return `HIERARCHY\nROOT Hips\n{\n${t(1)}OFFSET ${o(off.hips)}\n${t(1)}CHANNELS 6 Xposition Yposition Zposition Zrotation Xrotation Yrotation\n${t(1)}JOINT Spine\n${t(1)}{\n${t(2)}OFFSET ${o(off.spine)}\n${t(2)}CHANNELS 3 Zrotation Xrotation Yrotation\n${t(2)}JOINT Spine1\n${t(2)}{\n${t(3)}OFFSET ${o(off.spine1)}\n${t(3)}CHANNELS 3 Zrotation Xrotation Yrotation\n${t(3)}JOINT Spine2\n${t(3)}{\n${t(4)}OFFSET ${o(off.spine2)}\n${t(4)}CHANNELS 3 Zrotation Xrotation Yrotation\n${t(4)}JOINT Neck\n${t(4)}{\n${t(5)}OFFSET ${o(off.neck)}\n${t(5)}CHANNELS 3 Zrotation Xrotation Yrotation\n${t(5)}JOINT Head\n${t(5)}{\n${t(6)}OFFSET ${o(off.head)}\n${t(6)}CHANNELS 3 Zrotation Xrotation Yrotation\n${t(6)}End Site\n${t(6)}{\n${t(7)}OFFSET ${o(off.headEnd)}\n${t(6)}}\n${t(5)}}\n${t(4)}}\n${t(4)}JOINT LeftShoulder\n${t(4)}{\n${t(5)}OFFSET ${o(off.leftShoulder)}\n${t(5)}CHANNELS 3 Zrotation Xrotation Yrotation\n${t(5)}JOINT LeftArm\n${t(5)}{\n${t(6)}OFFSET ${o(off.leftArm)}\n${t(6)}CHANNELS 3 Zrotation Xrotation Yrotation\n${t(6)}JOINT LeftForeArm\n${t(6)}{\n${t(7)}OFFSET ${o(off.leftForeArm)}\n${t(7)}CHANNELS 3 Zrotation Xrotation Yrotation\n${t(7)}JOINT LeftHand\n${t(7)}{\n${t(8)}OFFSET ${o(off.leftHand)}\n${t(8)}CHANNELS 3 Zrotation Xrotation Yrotation\n${t(8)}End Site\n${t(8)}{\n${t(9)}OFFSET ${o(off.leftHandEnd)}\n${t(8)}}\n${t(7)}}\n${t(6)}}\n${t(5)}}\n${t(4)}}\n${t(4)}JOINT RightShoulder\n${t(4)}{\n${t(5)}OFFSET ${o(off.rightShoulder)}\n${t(5)}CHANNELS 3 Zrotation Xrotation Yrotation\n${t(5)}JOINT RightArm\n${t(5)}{\n${t(6)}OFFSET ${o(off.rightArm)}\n${t(6)}CHANNELS 3 Zrotation Xrotation Yrotation\n${t(6)}JOINT RightForeArm\n${t(6)}{\n${t(7)}OFFSET ${o(off.rightForeArm)}\n${t(7)}CHANNELS 3 Zrotation Xrotation Yrotation\n${t(7)}JOINT RightHand\n${t(7)}{\n${t(8)}OFFSET ${o(off.rightHand)}\n${t(8)}CHANNELS 3 Zrotation Xrotation Yrotation\n${t(8)}End Site\n${t(8)}{\n${t(9)}OFFSET ${o(off.rightHandEnd)}\n${t(8)}}\n${t(7)}}\n${t(6)}}\n${t(5)}}\n${t(4)}}\n${t(3)}}\n${t(2)}}\n${t(1)}}\n${t(1)}JOINT LeftUpLeg\n${t(1)}{\n${t(2)}OFFSET ${o(off.leftUpLeg)}\n${t(2)}CHANNELS 3 Zrotation Xrotation Yrotation\n${t(2)}JOINT LeftLeg\n${t(2)}{\n${t(3)}OFFSET ${o(off.leftLeg)}\n${t(3)}CHANNELS 3 Zrotation Xrotation Yrotation\n${t(3)}JOINT LeftFoot\n${t(3)}{\n${t(4)}OFFSET ${o(off.leftFoot)}\n${t(4)}CHANNELS 3 Zrotation Xrotation Yrotation\n${t(4)}JOINT LeftToeBase\n${t(4)}{\n${t(5)}OFFSET ${o(off.leftToeBase)}\n${t(5)}CHANNELS 3 Zrotation Xrotation Yrotation\n${t(5)}End Site\n${t(5)}{\n${t(6)}OFFSET ${o(off.leftToeEnd)}\n${t(5)}}\n${t(4)}}\n${t(3)}}\n${t(2)}}\n${t(1)}}\n${t(1)}JOINT RightUpLeg\n${t(1)}{\n${t(2)}OFFSET ${o(off.rightUpLeg)}\n${t(2)}CHANNELS 3 Zrotation Xrotation Yrotation\n${t(2)}JOINT RightLeg\n${t(2)}{\n${t(3)}OFFSET ${o(off.rightLeg)}\n${t(3)}CHANNELS 3 Zrotation Xrotation Yrotation\n${t(3)}JOINT RightFoot\n${t(3)}{\n${t(4)}OFFSET ${o(off.rightFoot)}\n${t(4)}CHANNELS 3 Zrotation Xrotation Yrotation\n${t(4)}JOINT RightToeBase\n${t(4)}{\n${t(5)}OFFSET ${o(off.rightToeBase)}\n${t(5)}CHANNELS 3 Zrotation Xrotation Yrotation\n${t(5)}End Site\n${t(6)}\n${t(6)}OFFSET ${o(off.rightToeEnd)}\n${t(5)}}\n${t(4)}}\n${t(3)}}\n${t(2)}}\n${t(1)}}\n}`
 }
 
+// ── Rear-view correction ──────────────────────────────────────────────────────
+// When the camera is behind the subject, MediaPipe's x coordinates are mirrored
+function correctRearView(p, pelvisFwd) {
+  // In exportBVH coordinate space (after mp() flips), pelvisFwd[2] > 0
+  // means the pelvis forward vector points away from camera = rear view.
+  if (pelvisFwd[2] >= 0) return p // frontal or side-on, no correction needed
+
+  // Mirror x for all joint positions, and swap left/right pairs
+  const mx = ([x, y, z]) => [-x, y, z]
+
+  return {
+    hips:          mx(p.hips),
+    spine:         mx(p.spine),
+    spine1:        mx(p.spine1),
+    spine2:        mx(p.spine2),
+    neck:          mx(p.neck),
+    head:          mx(p.head),
+    // Swap left and right, from behind, MediaPipe's left is the body's right
+    leftShoulder:  mx(p.rightShoulder),
+    leftArm:       mx(p.rightArm),
+    leftForeArm:   mx(p.rightForeArm),
+    leftHand:      mx(p.rightHand),
+    rightShoulder: mx(p.leftShoulder),
+    rightArm:      mx(p.leftArm),
+    rightForeArm:  mx(p.leftForeArm),
+    rightHand:     mx(p.leftHand),
+    leftUpLeg:     mx(p.rightUpLeg),
+    leftLeg:       mx(p.rightLeg),
+    leftFoot:      mx(p.rightFoot),
+    leftToeBase:   mx(p.rightToeBase),
+    rightUpLeg:    mx(p.leftUpLeg),
+    rightLeg:      mx(p.leftLeg),
+    rightFoot:     mx(p.leftFoot),
+    rightToeBase:  mx(p.leftToeBase),
+    // Foot limits swap too
+    lFootRollLimit:  p.rFootRollLimit,
+    lFootTwistLimit: p.rFootTwistLimit,
+    rFootRollLimit:  p.lFootRollLimit,
+    rFootTwistLimit: p.lFootTwistLimit,
+  }
+}
+
 function buildMotion(frames, frameTime, off) {
   const lines = ['MOTION', `Frames: ${frames.length}`, `Frame Time: ${f(frameTime)}`]
   const DOWN = [0, -1, 0], FWD = [0, 0, 1]
@@ -379,9 +421,24 @@ function buildMotion(frames, frameTime, off) {
   }
 
   for (const frame of frames) {
-    // P() now applies hinge constraints before returning joint positions
-    const p    = P(frame.landmarks, frame.worldLandmarks)
-    const vals = []
+    // P() applies hinge constraints before returning joint positions
+    const pRaw = P(frame.landmarks, frame.worldLandmarks)
+    // Compute pelvisFwd for rear-view detection (reuse from P's internal geometry)
+    const lh = pRaw.leftUpLeg, rh = pRaw.rightUpLeg
+    const ls = pRaw.leftShoulder, rs = pRaw.rightShoulder
+    const hipRight     = norm(sub(rh, lh))
+    const spineUp      = norm(sub(avg(ls, rs), avg(lh, rh)))
+    const spineUpOrtho = norm(sub(spineUp, scale(hipRight, dot(spineUp, hipRight))))
+    const pelvisFwd    = norm(cross(hipRight, spineUpOrtho))
+    if (frame === frames[0] || frame === frames[Math.floor(frames.length/2)]) {
+      console.log('[pelvisFwd]', pelvisFwd, 'z:', pelvisFwd[2], 'rearView:', pelvisFwd[2] > 0)
+    }
+    const p            = correctRearView(pRaw, pelvisFwd)
+    const vals         = []
+
+    if (frame === frames[0] || frame === frames[Math.floor(frames.length/2)]) {
+      console.log('[pelvisFwd]', pelvisFwd, 'z:', pelvisFwd[2], 'rearView:', pelvisFwd[2] > 0)
+    }
 
     // ── Hips ──────────────────────────────────────────────────────────────
     vals.push(...p.hips)
