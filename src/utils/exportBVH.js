@@ -1,3 +1,5 @@
+import { OrientationEstimator } from './orientationEstimator.js'
+
 // ── BVH Exporter ─────────────────────────────────────────────────────────────
 // Converts MediaPipe pose landmark frames to a BVH animation file.
 // Matches Mixamo/Blender BVH export convention exactly.
@@ -51,6 +53,25 @@ function getBoneLengths(rawLKnee, rawRKnee, lAnkle, rAnkle,
     rFore:  len(sub(rWrist,    rawRElbow)) || 1,
   }
   return cachedLengths
+}
+
+// Tracks the minimum Y seen for each foot across all frames
+// Used to snap feet to floor when they dip below their lowest recorded position
+let footFloorY = { left: Infinity, right: Infinity }
+
+function resetFootFloor() { footFloorY = { left: Infinity, right: Infinity } }
+
+function enforceFootFloor(lAnkle, rAnkle) {
+  // Update floor reference (lowest point seen = floor level)
+  footFloorY.left  = Math.min(footFloorY.left,  lAnkle[1])
+  footFloorY.right = Math.min(footFloorY.right, rAnkle[1])
+
+  // Foot cannot go below its own floor level
+  const LIFT_EPSILON = 0.5
+  return {
+    lAnkle: [lAnkle[0], Math.max(lAnkle[1], footFloorY.left  - LIFT_EPSILON), lAnkle[2]],
+    rAnkle: [rAnkle[0], Math.max(rAnkle[1], footFloorY.right - LIFT_EPSILON), rAnkle[2]],
+  }
 }
 
 // ── Place knee correctly ───────────────────────────────
@@ -165,9 +186,10 @@ function P(lms, worldLms) {
   const rightEar   = mp(lms, w, 8)
   const earMid     = avg(leftEar, rightEar)
 
-  // Raw ankle and wrist positions, these are trusted and never moved
+  // Raw ankle and wrist positions
   const lAnkle = mp(lms, w, 27)
   const rAnkle = mp(lms, w, 28)
+  const { lAnkle: clampedLAnkle, rAnkle: clampedRAnkle } = enforceFootFloor(lAnkle, rAnkle)
   const lWrist = mp(lms, w, 15)
   const rWrist = mp(lms, w, 16)
 
@@ -344,9 +366,7 @@ function buildHierarchy(off) {
 // ── Rear-view correction ──────────────────────────────────────────────────────
 // When the camera is behind the subject, MediaPipe's x coordinates are mirrored
 function correctRearView(p, pelvisFwd) {
-  // In exportBVH coordinate space (after mp() flips), pelvisFwd[2] > 0
-  // means the pelvis forward vector points away from camera = rear view.
-  if (pelvisFwd[2] >= 0) return p // frontal or side-on, no correction needed
+  if (pelvisFwd[2] >= 0) return p
 
   // Mirror x for all joint positions, and swap left/right pairs
   const mx = ([x, y, z]) => [-x, y, z]
@@ -383,7 +403,7 @@ function correctRearView(p, pelvisFwd) {
   }
 }
 
-function buildMotion(frames, frameTime, off) {
+function buildMotion(frames, frameTime, off, captureFps) {
   const lines = ['MOTION', `Frames: ${frames.length}`, `Frame Time: ${f(frameTime)}`]
   const DOWN = [0, -1, 0], FWD = [0, 0, 1]
   const REST = {
@@ -395,9 +415,20 @@ function buildMotion(frames, frameTime, off) {
     rightUpLeg: DOWN, rightLeg: DOWN, rightFoot: DOWN, rightToeBase: FWD,
   }
 
+  // One estimator instance across all frames
+  const orientEst = new OrientationEstimator({ captureFps })
+
   for (const frame of frames) {
+    const enrichedFrame = orientEst.process(frame)
+    const { orientation } = enrichedFrame
+
+    if (orientation.shotCut) {
+      console.log(`[BVH] Shot cut detected, yaw: ${orientation.yaw.toFixed(1)}°`)
+    }
+
     // P() applies hinge constraints before returning joint positions
     const pRaw = P(frame.landmarks, frame.worldLandmarks)
+    
     // Compute pelvisFwd for rear-view detection (reuse from P's internal geometry)
     const lh = pRaw.leftUpLeg, rh = pRaw.rightUpLeg
     const ls = pRaw.leftShoulder, rs = pRaw.rightShoulder
@@ -405,15 +436,9 @@ function buildMotion(frames, frameTime, off) {
     const spineUp      = norm(sub(avg(ls, rs), avg(lh, rh)))
     const spineUpOrtho = norm(sub(spineUp, scale(hipRight, dot(spineUp, hipRight))))
     const pelvisFwd    = norm(cross(hipRight, spineUpOrtho))
-    if (frame === frames[0] || frame === frames[Math.floor(frames.length/2)]) {
-      console.log('[pelvisFwd]', pelvisFwd, 'z:', pelvisFwd[2], 'rearView:', pelvisFwd[2] > 0)
-    }
+
     const p            = correctRearView(pRaw, pelvisFwd)
     const vals         = []
-
-    if (frame === frames[0] || frame === frames[Math.floor(frames.length/2)]) {
-      console.log('[pelvisFwd]', pelvisFwd, 'z:', pelvisFwd[2], 'rearView:', pelvisFwd[2] > 0)
-    }
 
     // ── Hips ──────────────────────────────────────────────────────────────
     vals.push(...p.hips)

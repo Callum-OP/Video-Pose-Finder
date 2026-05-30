@@ -410,6 +410,15 @@ export function usePoseExtractor() {
 
     const finalFrames = subsampleFrames(keyframes, maxFrames)
     setFrames(finalFrames)
+    // Compute orientation summary for the stats panel:
+    const viewCounts = finalFrames.reduce((acc, f) => {
+      const v = f.orientation?.view ?? 'unknown'
+      acc[v] = (acc[v] || 0) + 1
+      return acc
+    }, {})
+
+    const shotCuts = finalFrames.filter(f => f.orientation?.shotCut).length
+
     setStats({
       frameCount:    finalFrames.length,
       capturedCount: captured.length,
@@ -417,6 +426,8 @@ export function usePoseExtractor() {
       duration:      videoDuration.toFixed(2),
       captureFps,
       totalSampled:  totalFrames,
+      viewCounts,
+      shotCuts,
     })
     setStatus('done')
     scrollToRef(statsSummaryRef)
