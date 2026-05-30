@@ -100,6 +100,17 @@ export default function App() {
     URL.revokeObjectURL(url)
   }
 
+  async function exportEnhancedBVH() {
+    try {
+      const { liftPosesTo3D } = await import('./utils/poseLifter')
+      const { exportEnhancedBVH: exportEnhanced } = await import('./utils/exportBVH')
+      const enhanced = await liftPosesTo3D(frames, (msg) => console.log('[3D lift]', msg))
+      exportEnhanced(enhanced, stats.captureFps)
+    } catch (err) {
+      alert(`Enhanced export failed: ${err.message}`)
+    }
+  }
+
   const isProcessing = status === 'processing' || status === 'loading-model' || status === 'prescanning'
   const isSelecting  = status === 'select-person'
 
@@ -317,20 +328,26 @@ export default function App() {
         <>
           <div className="inspector-header">
             <h2 className="inspector-header__title">Frame Inspector</h2>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button
-                className="btn bg-transparent border border-[#f5a623] rounded-[4px] px-3.5 py-1.5 text-[#f5a623] text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-[#f5a623]/10"
-                onClick={() => exportBVH(frames, stats.captureFps)}
-              >
-                ↓ Export Raw BVH
-              </button>
-              <button
-                className="btn bg-transparent border border-green-500 rounded-[4px] px-3.5 py-1.5 text-green-500 text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-green-500/10"
-                onClick={exportJSON}
-              >
-                ↓ Export JSON
-              </button>
-            </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  className="btn bg-transparent border border-[#f5a623] rounded-[4px] px-3.5 py-1.5 text-[#f5a623] text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-[#f5a623]/10"
+                  onClick={() => exportBVH(frames, stats.captureFps)}
+                  >
+                  ↓ Export BVH
+                </button>
+                <button
+                  className="btn bg-transparent border border-purple-400 rounded-[4px] px-3.5 py-1.5 text-purple-400 text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-purple-400/10"
+                  onClick={exportEnhancedBVH}
+                  >
+                  ↓ Export Enhanced BVH ✦
+                </button>
+                <button
+                  className="btn bg-transparent border border-green-500 rounded-[4px] px-3.5 py-1.5 text-green-500 text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-green-500/10"
+                  onClick={exportJSON}
+                  >
+                  ↓ Export JSON
+                </button>
+              </div>
           </div>
           <div className="inspector-card">
             <FrameInspector frames={frames} stats={stats} />

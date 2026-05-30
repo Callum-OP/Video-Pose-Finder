@@ -524,3 +524,16 @@ export function exportBVH(frames, captureFps) {
   a.href = url; a.download = 'pose_refined.bvh'; a.click()
   URL.revokeObjectURL(url)
 }
+
+export function exportEnhancedBVH(frames, captureFps) {
+  if (!frames?.length) return
+  resetBoneLengthCache()  // ensure lengths are measured from enhanced frame data
+  const off = getRestOffsets()
+  const smoothedFrames = smoothFrames(frames, 3)
+  const bvh = buildHierarchy(off) + '\n' + buildMotion(smoothedFrames, 1 / captureFps, off)
+  const blob = new Blob([bvh], { type: 'text/plain' })
+  const url  = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url; a.download = 'pose_enhanced.bvh'; a.click()
+  URL.revokeObjectURL(url)
+}

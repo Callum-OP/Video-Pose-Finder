@@ -38,3 +38,6 @@ venv/
 # Secrets
 *.pem
 service-account.json
+
+# Models
+public/models/
