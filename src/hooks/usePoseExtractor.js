@@ -1,5 +1,6 @@
 import { useRef, useState, useCallback } from 'react'
 import { PoseLandmarker, FilesetResolver } from '@mediapipe/tasks-vision'
+import { LandmarkFilterBank } from '../utils/oneEuroFilter'
 
 // MediaPipe landmark indices for the connections that'll be drawn
 export const POSE_CONNECTIONS = [
@@ -91,6 +92,7 @@ export function usePoseExtractor() {
   const scrubVideoRef = useRef(null)
   const fileRef = useRef(null)
   const isCancelledRef = useRef(false)
+  const filterBankRef = useRef(null)
 
   const [status, setStatus] = useState('idle')
   const [progress, setProgress] = useState(0)
@@ -343,6 +345,9 @@ export function usePoseExtractor() {
 
     setStatus('processing')
 
+    // Create/reset the filter bank when processing starts, matching captureFps
+    filterBankRef.current = new LandmarkFilterBank({ freq: captureFps })
+
     let seedLocked = seed === null
     const captured = []
     let frameIndex = 0
@@ -374,7 +379,13 @@ export function usePoseExtractor() {
               continue
             }
           }
-          captured.push({ frameIndex, timeMs: Math.round(t * 1000), landmarks, worldLandmarks })
+          const filteredFrame = filterBankRef.current.filter({
+            frameIndex,
+            timeMs: Math.round(t * 1000),
+            landmarks,
+            worldLandmarks,
+          })
+          captured.push(filteredFrame)
         }
       }
 

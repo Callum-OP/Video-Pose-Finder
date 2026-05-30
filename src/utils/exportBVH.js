@@ -285,31 +285,6 @@ function quatFromTo(from, to) {
   return [w, axis[0]*s, axis[1]*s, axis[2]*s]
 }
 
-function smoothFrames(frames, windowSize = 3) {
-  if (!frames || frames.length === 0) return []
-  return frames.map((frame, i) => {
-    const start = Math.max(0, i - Math.floor(windowSize / 2))
-    const end   = Math.min(frames.length, start + windowSize)
-    const windowFrames = frames.slice(start, end)
-    if (!frame.worldLandmarks) return frame
-    const isArray = Array.isArray(frame.worldLandmarks)
-    const smoothed = isArray ? [] : {}
-    for (const key of Object.keys(frame.worldLandmarks)) {
-      let sx = 0, sy = 0, sz = 0, count = 0
-      for (const wf of windowFrames) {
-        const pt = wf.worldLandmarks?.[key]
-        if (pt) { sx += pt.x; sy += pt.y; sz += pt.z; count++ }
-      }
-      if (count > 0) {
-        const sp = { x: sx/count, y: sy/count, z: sz/count }
-        if (isArray) smoothed[parseInt(key, 10)] = sp
-        else smoothed[key] = sp
-      }
-    }
-    return { ...frame, worldLandmarks: smoothed }
-  })
-}
-
 function quatMul([w1,x1,y1,z1], [w2,x2,y2,z2]) {
   return [
     w1*w2 - x1*x2 - y1*y2 - z1*z2,
@@ -573,8 +548,7 @@ function buildMotion(frames, frameTime, off) {
 export function exportBVH(frames, captureFps) {
   if (!frames?.length) return
   const off = getRestOffsets()
-  const smoothedFrames = smoothFrames(frames, 3)
-  const bvh = buildHierarchy(off) + '\n' + buildMotion(smoothedFrames, 1 / captureFps, off)
+  const bvh = buildHierarchy(off) + '\n' + buildMotion(frames, 1 / captureFps, off)
   const blob = new Blob([bvh], { type: 'text/plain' })
   const url  = URL.createObjectURL(blob)
   const a = document.createElement('a')
