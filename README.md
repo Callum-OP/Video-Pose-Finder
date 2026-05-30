@@ -19,8 +19,6 @@ It struggles with being able to tell if the character has turned around, turning
 # Features To Consider
 Could have an advanced option that lets the user move or place the skeleton where it should be if that helps the program that tracks it know where to start.
 
-Allow users to upload images and get indvidual poses?
-
 Add warning message when failed to detect multiple people.
 
 Python backend that uses Gemini AI to tell which orientation the people in the video are facing as well as how many people there are, dealing with both the current limitations of the app at once.
