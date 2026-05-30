@@ -302,7 +302,81 @@ export function usePoseExtractor() {
     setScrubPersons(persons)
   }, [])
 
-  // ── Full extraction, user picked a person ───
+  // ── Single image pose extraction ───
+  const processImage = useCallback(async (file) => {
+    isCancelledRef.current = false
+    setError(null)
+    setFrames([])
+    setStats(null)
+    setProgress(0)
+
+    let landmarker
+    try {
+      landmarker = await createLandmarker(1)
+    } catch (e) {
+      setError('Failed to load MediaPipe model.')
+      setStatus('error')
+      return
+    }
+
+    // Draw image to canvas so MediaPipe can read it
+    const img = new Image()
+    img.src = URL.createObjectURL(file)
+    await new Promise((resolve, reject) => {
+      img.onload = resolve
+      img.onerror = reject
+    })
+
+    const canvas = document.createElement('canvas')
+    canvas.width = img.naturalWidth
+    canvas.height = img.naturalHeight
+    canvas.getContext('2d').drawImage(img, 0, 0)
+    URL.revokeObjectURL(img.src)
+
+    // Switch landmarker to IMAGE mode for static images
+    const imageLandmarker = await PoseLandmarker.createFromOptions(
+      visionRef.current, {
+        baseOptions: { modelAssetPath: MODEL_URL, delegate: 'GPU' },
+        runningMode: 'IMAGE',   // ← key difference from video mode
+        numPoses: 1,
+        minPoseDetectionConfidence: 0.4,
+      }
+    )
+
+    const result = imageLandmarker.detect(canvas)
+    imageLandmarker.close()
+
+    if (!result.landmarks?.length) {
+      setError('No person detected in image.')
+      setStatus('error')
+      return
+    }
+
+    const landmarks      = normaliseLandmarks(result.landmarks[0])
+    const worldLandmarks = result.worldLandmarks?.[0]
+      ? normaliseLandmarks(result.worldLandmarks[0])
+      : null
+
+    const singleFrame = [{
+      frameIndex:     0,
+      timeMs:         0,
+      landmarks,
+      worldLandmarks,
+    }]
+
+    setFrames(singleFrame)
+    setStats({
+      frameCount:    1,
+      capturedCount: 1,
+      keyframeCount: 1,
+      duration:      '0.00',
+      captureFps:    1,
+      totalSampled:  1,
+    })
+    setStatus('done')
+  }, [])
+
+  // ── Full video pose extraction ───
   const processVideo = useCallback(async (seed, settings = DEFAULT_SETTINGS) => {
     const file = fileRef.current
     if (!file) return
@@ -437,6 +511,7 @@ export function usePoseExtractor() {
     loadVideo,
     preScan,
     detectAtTime,
+    processImage,
     processVideo,
     cancelProcessing,
     status,

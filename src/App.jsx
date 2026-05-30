@@ -39,7 +39,7 @@ function StatBox({ label, value, unit }) {
 
 export default function App() {
   const {
-    preScan, processVideo, cancelProcessing,
+    preScan, processImage, processVideo, cancelProcessing,
     status, progress,
     frames, scanFrames,
     stats, error,
@@ -58,10 +58,20 @@ export default function App() {
   }
 
   function handleFile(file) {
-    if (!file || !file.type.startsWith('video/')) return
-    pendingFileRef.current = file
-    setShowModal(true)
-    if (inputRef.current) inputRef.current.value = ''
+    if (!file) return
+
+    // Image, skip the modal, go straight to single-frame extraction
+    if (file.type.startsWith('image/')) {
+      setLastFile(file)
+      fileRef.current = file
+      processImage(file)
+      return
+    }
+
+    if (file.type.startsWith('video/')) {
+      pendingFileRef.current = file
+      setShowModal(true)
+    }
   }
 
   function handleSinglePerson() {
@@ -221,11 +231,11 @@ export default function App() {
           onDrop={handleDrop}
           onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
           onDragLeave={() => setDragOver(false)}
-        >
+          >
           <input
             ref={inputRef}
             type="file"
-            accept="video/*"
+            accept="video/*,image/jpeg,image/png,image/webp"  // ← add image types
             style={{ display: 'none' }}
             onChange={(e) => handleFile(e.target.files[0])}
           />
@@ -233,7 +243,7 @@ export default function App() {
           <div className="upload-zone__label">
             {isProcessing ? 'Processing…' : 'Drop a video or click to upload'}
           </div>
-          <div className="upload-zone__hint">MP4, MOV, WebM</div>
+          <div className="upload-zone__hint">MP4, MOV, WebM · JPG, PNG, WebP</div>
         </div>
       </div>
 
