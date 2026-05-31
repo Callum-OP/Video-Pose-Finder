@@ -577,6 +577,6 @@ export function exportBVH(frames, captureFps) {
   const blob = new Blob([bvh], { type: 'text/plain' })
   const url  = URL.createObjectURL(blob)
   const a = document.createElement('a')
-  a.href = url; a.download = 'pose_refined.bvh'; a.click()
+  a.href = url; a.download = 'pose_sequence.bvh'; a.click()
   URL.revokeObjectURL(url)
 }

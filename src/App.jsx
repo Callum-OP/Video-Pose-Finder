@@ -332,7 +332,7 @@ export default function App() {
                 className="btn bg-transparent border border-[#f5a623] rounded-[4px] px-3.5 py-1.5 text-[#f5a623] text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-[#f5a623]/10"
                 onClick={() => exportBVH(frames, stats.captureFps)}
               >
-                ↓ Export Raw BVH
+                ↓ Export BVH
               </button>
               <button
                 className="btn bg-transparent border border-green-500 rounded-[4px] px-3.5 py-1.5 text-green-500 text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-green-500/10"
