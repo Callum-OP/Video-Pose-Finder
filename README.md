@@ -3,7 +3,10 @@
 
 
 # How to run
-To set up dependencies, assuming you have node installed, use: npm install 
+
+If you want to test out the online version just go to: https://callum-op.github.io/Video-Pose-Finder/
+
+For the local version, you will need to set up dependencies, assuming you have node installed, use: npm install 
 
 Then to run use: npm run dev
 
@@ -46,5 +49,5 @@ A prompt for this could look like:
 
 Could also use Gemini AI to tidy up the pose data, filling in missing limbs, fixing inaccuracies and other tasks to ensure that the final pose sequence is complete and usable.
 
-Save pose sequences using MongoDB? Then the user can access them whenever they want. Would also be useful to save settings.
+Save pose sequences? Then the user can access them whenever they want. Would also be useful to save settings. Could just save them to local storage or use something like MongoDB.
 
