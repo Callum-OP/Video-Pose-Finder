@@ -1,8 +1,9 @@
 import { useRef, useState, useCallback } from 'react'
 import { PoseLandmarker, FilesetResolver } from '@mediapipe/tasks-vision'
 import { LandmarkFilterBank } from '../utils/oneEuroFilter'
+import { getOrientation, identifyPersons, completeLimbs, saveSession } from '../utils/poseFinderAgent'
 
-// MediaPipe landmark indices for the connections that'll be drawn
+// MediaPipe landmark indices for the connections that'll be drawn.
 export const POSE_CONNECTIONS = [
   // Torso
   [11, 12], [11, 23], [12, 24], [23, 24],
@@ -29,12 +30,12 @@ export const NAMED_JOINTS = {
   27: 'l_ankle',    28: 'r_ankle',
 }
 
-// These are the default settings the user will be able to adjust them in the UI later
+// These are the default settings the user will be able to adjust them in the UI later.
 export const DEFAULT_SETTINGS = {
-  captureFps:          30,   // Samples per second taken from the video
-  confidenceThreshold: 0.5,  // Min accepted amount of visibility to keep a frame/pose
-  keyframeThreshold:   0.04, // Min accepted amount of joint movement (0–1 normalised) to keep a frame/pose
-  maxFrames:           200,  // The number of frames/poses to keep
+  captureFps:          30,   // Samples per second taken from the video.
+  confidenceThreshold: 0.5,  // Min accepted amount of visibility to keep a frame/pose.
+  keyframeThreshold:   0.04, // Min accepted amount of joint movement (0–1 normalised) to keep a frame/pose.
+  maxFrames:           200,  // The number of frames/poses to keep.
 }
 
 export const PERSON_COLORS = ['#7c6cff', '#39e8a0', '#f5a623', '#ff4d6d']
@@ -67,7 +68,7 @@ function subsampleFrames(frames, maxFrames) {
   return Array.from({ length: maxFrames }, (_, i) => frames[Math.round(i * step)])
 }
 
-// Hip midpoint — used as the seed position for tracking
+// Hip midpoint, used as the seed position for tracking.
 export function hipCenter(landmarks) {
   const l = landmarks[23]; const r = landmarks[24]
   if (!l || !r) return null
@@ -83,6 +84,25 @@ function normaliseLandmarks(rawLms) {
     z: parseFloat(lm.z.toFixed(4)),
     v: parseFloat((lm.visibility ?? 1).toFixed(3)),
   }))
+}
+
+// Apply Gemini limb corrections to a landmarks array.
+// Gemini estimates positions for hidden/occluded joints from the visual context.
+// Only applies corrections where Gemini confidence > 0.5 to avoid bad guesses.
+function applyLimbCorrections(landmarks, corrections) {
+  if (!corrections?.length) return landmarks
+  const corrected = [...landmarks]
+  for (const fix of corrections) {
+    if (fix.confidence > 0.5 && corrected[fix.landmark_index]) {
+      corrected[fix.landmark_index] = {
+        ...corrected[fix.landmark_index],
+        x: fix.estimated_x,
+        y: fix.estimated_y,
+        v: fix.confidence,
+      }
+    }
+  }
+  return corrected
 }
 
 // Main Public Hook
@@ -104,6 +124,8 @@ export function usePoseExtractor() {
   const [scrubPersons, setScrubPersons] = useState([])
   // Storage array for the filmstrip/pre-scan view mode
   const [scanFrames, setScanFrames] = useState([])
+  // Gemini-identified persons at first frame (for multi-person selection UI)
+  const [geminiPersons, setGeminiPersons] = useState([])
 
   const selectPersonRef = useRef(null)
   const statsSummaryRef = useRef(null)
@@ -124,6 +146,7 @@ export function usePoseExtractor() {
     setProgress(0)
     setScrubPersons([])
     setScanFrames([])
+    setGeminiPersons([])
     fileRef.current = null
     if (scrubVideoRef.current) {
       URL.revokeObjectURL(scrubVideoRef.current.src)
@@ -153,7 +176,7 @@ export function usePoseExtractor() {
     return landmarker
   }
 
-  // ── Load video and landmarker, enter scrub mode ────────────────────
+  // ── Load video and landmarker, enter scrub mode ────────────────────────────
   const loadVideo = useCallback(async (file) => {
     isCancelledRef.current = false
     setError(null)
@@ -162,6 +185,7 @@ export function usePoseExtractor() {
     setProgress(0)
     setScrubPersons([])
     setScanFrames([])
+    setGeminiPersons([])
     fileRef.current = file
 
     // Clean up any previous scrub video
@@ -195,7 +219,7 @@ export function usePoseExtractor() {
     scrollToRef(selectPersonRef)
   }, [])
 
-  // ── Quick automated scan alternative to step selection ───────────
+  // ── Quick automated scan alternative to manual person selection ───────────
   const preScan = useCallback(async (file) => {
     isCancelledRef.current = false
     setError(null)
@@ -204,6 +228,7 @@ export function usePoseExtractor() {
     setStats(null)
     setProgress(0)
     setScrubPersons([])
+    setGeminiPersons([])
     fileRef.current = file
 
     if (scrubVideoRef.current) {
@@ -236,6 +261,18 @@ export function usePoseExtractor() {
     const totalFrames = Math.ceil(videoDuration * scanFps)
 
     setStatus('prescanning')
+
+    // ── Gemini person identification on first frame ────────────────────────
+    // Ask Gemini to identify how many people are in the video and where they
+    // are, giving a more accurate count and description than MediaPipe alone.
+    video.currentTime = 0
+    await new Promise((r) => { video.onseeked = r })
+    const videoId = file.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()
+    const geminiPeople = await identifyPersons(video, videoId, 0)
+    if (geminiPeople?.persons?.length > 0) {
+      setGeminiPersons(geminiPeople.persons)
+      console.log(`[Gemini] Identified ${geminiPeople.total_count} person(s) in first frame`)
+    }
 
     const results = []
     let frameIndex = 0
@@ -302,7 +339,9 @@ export function usePoseExtractor() {
     setScrubPersons(persons)
   }, [])
 
-  // ── Single image pose extraction ───
+  // ── Single image pose extraction ──────────────────────────────────────────
+  // Also runs Gemini limb completion on the result for better accuracy.
+  // Works for JPG, PNG, WebP, useful for pose reference images.
   const processImage = useCallback(async (file) => {
     isCancelledRef.current = false
     setError(null)
@@ -333,11 +372,10 @@ export function usePoseExtractor() {
     canvas.getContext('2d').drawImage(img, 0, 0)
     URL.revokeObjectURL(img.src)
 
-    // Switch landmarker to IMAGE mode for static images
     const imageLandmarker = await PoseLandmarker.createFromOptions(
       visionRef.current, {
         baseOptions: { modelAssetPath: MODEL_URL, delegate: 'GPU' },
-        runningMode: 'IMAGE',   // ← key difference from video mode
+        runningMode: 'IMAGE',
         numPoses: 1,
         minPoseDetectionConfidence: 0.4,
       }
@@ -352,10 +390,23 @@ export function usePoseExtractor() {
       return
     }
 
-    const landmarks      = normaliseLandmarks(result.landmarks[0])
+    let landmarks        = normaliseLandmarks(result.landmarks[0])
     const worldLandmarks = result.worldLandmarks?.[0]
       ? normaliseLandmarks(result.worldLandmarks[0])
       : null
+
+    // ── Gemini limb completion for images ─────────────────────────────────
+    // Images often have partially visible people (cropped, occluded).
+    // Gemini can reason about what the hidden limbs likely look like.
+    const hasLowConfidence = landmarks.some(lm => (lm.v ?? 1) < 0.4)
+    if (hasLowConfidence) {
+      const imageId   = file.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()
+      const completion = await completeLimbs(canvas, imageId, 0, landmarks)
+      if (completion?.corrections?.length) {
+        landmarks = applyLimbCorrections(landmarks, completion.corrections)
+        console.log(`[Gemini] Applied ${completion.corrections.length} limb correction(s) to image`)
+      }
+    }
 
     const singleFrame = [{
       frameIndex:     0,
@@ -376,7 +427,7 @@ export function usePoseExtractor() {
     setStatus('done')
   }, [])
 
-  // ── Full video pose extraction ───
+  // ── Full video pose extraction ─────────────────────────────────────────────
   const processVideo = useCallback(async (seed, settings = DEFAULT_SETTINGS) => {
     const file = fileRef.current
     if (!file) return
@@ -419,8 +470,23 @@ export function usePoseExtractor() {
 
     setStatus('processing')
 
-    // Create/reset the filter bank when processing starts, matching captureFps
+    // Create/reset the filter bank when processing starts, matching captureFps.
+    // The One Euro Filter adapts its smoothing to the signal speed, heavy smoothing at rest, light smoothing during fast motion.
     filterBankRef.current = new LandmarkFilterBank({ freq: captureFps })
+
+    // Stable video ID derived from filename, used as MongoDB cache key so
+    // re-processing the same video reuses Gemini's previous orientation answers.
+    const videoId = file.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()
+
+    // Gemini orientation: sample at 1fps regardless of captureFps.
+    // Orientation changes slowly enough that 1fps is sufficient, and this avoids hammering the Gemini API on every frame.
+    let lastOrientationTime    = -1
+    const ORIENTATION_INTERVAL = 1  // Seconds between Gemini orientation calls
+
+    // Gemini limb completion: throttled to at most once per 2 seconds.
+    // Limb completion calls are expensive so only trigger when needed and not too frequently so processing stays fast.
+    let lastLimbCompletionTime    = -2
+    const LIMB_COMPLETION_INTERVAL = 2  // Seconds
 
     let seedLocked = seed === null
     const captured = []
@@ -439,7 +505,7 @@ export function usePoseExtractor() {
       const result = landmarker.detectForVideo(video, Math.round(t * 1000))
 
       if (result.landmarks.length > 0) {
-        const landmarks = normaliseLandmarks(result.landmarks[0])
+        let landmarks        = normaliseLandmarks(result.landmarks[0])
         const worldLandmarks = result.worldLandmarks?.[0] ? normaliseLandmarks(result.worldLandmarks[0]) : null
 
         if (avgConfidence(landmarks) >= confidenceThreshold) {
@@ -453,11 +519,37 @@ export function usePoseExtractor() {
               continue
             }
           }
+
+          // ── Gemini orientation (1fps) ─────────────────────────────────
+          // Ask Gemini which way the person is facing. 
+          // The answer gets used by OrientationEstimator in exportBVH to rotate the hips bone correctly.
+          let geminiOrientation = null
+          if (t - lastOrientationTime >= ORIENTATION_INTERVAL) {
+            lastOrientationTime = t
+            geminiOrientation = await getOrientation(video, videoId, frameIndex)
+          }
+
+          // ── Gemini limb completion (throttled, when landmarks are hidden) ─
+          // When MediaPipe can't see a joint (visibility < 0.4, e.g. behind another person or off-frame), 
+          // Gemini estimates its position from the visual context and the visible anatomy.
+          const hasLowConfidence = landmarks.some(lm => (lm.v ?? 1) < 0.4)
+          if (hasLowConfidence && t - lastLimbCompletionTime >= LIMB_COMPLETION_INTERVAL) {
+            lastLimbCompletionTime = t
+            const completion = await completeLimbs(video, videoId, frameIndex, landmarks)
+            if (completion?.corrections?.length) {
+              landmarks = applyLimbCorrections(landmarks, completion.corrections)
+            }
+          }
+
+          // ── Filter + store frame ───────────────────────────────────────
+          // One Euro Filter runs on the (already Gemini-corrected) landmarks.
+          // geminiOrientation is attached so exportBVH's OrientationEstimator can use it.
           const filteredFrame = filterBankRef.current.filter({
             frameIndex,
             timeMs: Math.round(t * 1000),
             landmarks,
             worldLandmarks,
+            geminiOrientation,
           })
           captured.push(filteredFrame)
         }
@@ -483,16 +575,19 @@ export function usePoseExtractor() {
     }
 
     const finalFrames = subsampleFrames(keyframes, maxFrames)
-    setFrames(finalFrames)
-    // Compute orientation summary for the stats panel:
+
+    // Compute orientation summary for the stats panel
     const viewCounts = finalFrames.reduce((acc, f) => {
       const v = f.orientation?.view ?? 'unknown'
       acc[v] = (acc[v] || 0) + 1
       return acc
     }, {})
-
     const shotCuts = finalFrames.filter(f => f.orientation?.shotCut).length
 
+    // Count how many frames had Gemini orientation data (vs heuristic fallback)
+    const geminiOrientationFrames = finalFrames.filter(f => f.geminiOrientation).length
+
+    setFrames(finalFrames)
     setStats({
       frameCount:    finalFrames.length,
       capturedCount: captured.length,
@@ -502,9 +597,21 @@ export function usePoseExtractor() {
       totalSampled:  totalFrames,
       viewCounts,
       shotCuts,
+      geminiOrientationFrames,
     })
     setStatus('done')
     scrollToRef(statsSummaryRef)
+
+    // ── Save session to MongoDB ──────────────────────────────────────────────
+    // Persists the session so the user can retrieve it later without reprocessing.
+    saveSession(videoId, finalFrames.length, {
+      duration:      videoDuration.toFixed(2),
+      captureFps,
+      frameCount:    finalFrames.length,
+      shotCuts,
+      viewCounts,
+      geminiOrientationFrames,
+    })
   }, [])
 
   return {
@@ -522,6 +629,7 @@ export function usePoseExtractor() {
     error,
     duration,
     scrubPersons,
+    geminiPersons,
     fileRef,
     selectPersonRef,
     statsSummaryRef,

@@ -25,6 +25,8 @@ const STATUS_LABEL = {
   error:           '✕ Error',
 }
 
+ const backendUrl = import.meta.env.VITE_BACKEND_URL
+
 function StatBox({ label, value, unit }) {
   return (
     <div className="stat-box">
@@ -146,6 +148,17 @@ export default function App() {
           <span className="status-bar__pct">{progress}%</span>
         )}
       </div>
+
+      {backendUrl && (
+        <div className="text-xs font-mono text-center mb-4" style={{ color: '#39e8a0' }}>
+          ✓ AI backend active — orientation correction, limb completion enabled<br></br><br></br>
+        </div>
+      )}
+      {!backendUrl && (
+        <div className="text-xs font-mono text-center mb-4" style={{ color: '#4a4a6a' }}>
+          ○ Running in local mode — front-facing video recommended<br></br><br></br>
+        </div>
+      )}
 
       {/* Settings panel */}
       <div className="settings">

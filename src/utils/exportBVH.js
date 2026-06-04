@@ -6,13 +6,6 @@ import { OrientationEstimator } from './orientationEstimator.js'
 
 const SCALE = 100
 
-function mp(lms, worldLms, idx) {
-  const src = worldLms?.[idx] ?? lms[idx]
-  if (!src) return [0, 0, 0]
-  if (worldLms?.[idx]) return [-src.x * SCALE, -src.y * SCALE, src.z * SCALE]
-  return [-src.x * SCALE, -src.y * SCALE, 0]
-}
-
 function avg(a, b) { return [(a[0]+b[0])/2, (a[1]+b[1])/2, (a[2]+b[2])/2] }
 function sub(a, b) { return [a[0]-b[0], a[1]-b[1], a[2]-b[2]] }
 function add(a, b) { return [a[0]+b[0], a[1]+b[1], a[2]+b[2]] }
@@ -30,8 +23,38 @@ function rotateAround(vec, ax, rad) {
   return add(add(scale(vec, c), scale(cross(ax, vec), s)), scale(ax, dot(ax, vec) * (1-c)))
 }
 
+// ── Pre-rotation by Gemini yaw ────────────────────────────────────────────────
+// When person is at yawDeg according to Gemini, rotate coordinates by -yawDeg around Y so the body's forward direction aligns with the BVH forward axis.
+function preRotateY([x, y, z], yawDeg) {
+  const rad = -yawDeg * (Math.PI / 180)  //Rotate coords to match body forward
+  const c = Math.cos(rad), s = Math.sin(rad)
+  return [x * c - z * s, y, x * s + z * c]
+}
+
+// ── Coordinate extraction with yaw pre-rotation ───────────────────────────────
+// Applies Gemini's yaw to every landmark before any IK solving happens.
+// For front-facing views (yaw ≈ 0) this is not needed.
+function mp(lms, worldLms, idx, yawDeg = 0) {
+  const src = worldLms?.[idx] ?? lms[idx]
+  if (!src) return [0, 0, 0]
+  if (worldLms?.[idx]) {
+    const raw = [-src.x * SCALE, -src.y * SCALE, src.z * SCALE]
+    return preRotateY(raw, yawDeg)
+  }
+  return [-src.x * SCALE, -src.y * SCALE, 0]
+}
+
+// ── Normalize yaw to [-180, 180] ──────────────────────────────────────────────
+function wrapYaw(yaw) {
+  let w = yaw % 360
+  if (w > 180) w -= 360
+  if (w < -180) w += 360
+  return w
+}
+
 // ── Bone length cache ─────────────────────────────────────────────────────────
 // Lengths are measured from the first frame and locked for the entire export.
+// This prevents rubbery limbs caused by frame-to-frame landmark noise.
 let cachedLengths = null
 
 function resetBoneLengthCache() {
@@ -55,8 +78,9 @@ function getBoneLengths(rawLKnee, rawRKnee, lAnkle, rAnkle,
   return cachedLengths
 }
 
-// Tracks the minimum Y seen for each foot across all frames
-// Used to snap feet to floor when they dip below their lowest recorded position
+// ── Foot floor clamp ──────────────────────────────────────────────────────────
+// Tracks the minimum Y seen for each foot across all frames.
+// Used to snap feet to floor when they dip below their lowest recorded position.
 let footFloorY = { left: Infinity, right: Infinity }
 
 function resetFootFloor() { footFloorY = { left: Infinity, right: Infinity } }
@@ -65,8 +89,7 @@ function enforceFootFloor(lAnkle, rAnkle) {
   // Update floor reference (lowest point seen = floor level)
   footFloorY.left  = Math.min(footFloorY.left,  lAnkle[1])
   footFloorY.right = Math.min(footFloorY.right, rAnkle[1])
-
-  // Foot cannot go below its own floor level
+  // Small epsilon allows natural heel raise during walking
   const LIFT_EPSILON = 0.5
   return {
     lAnkle: [lAnkle[0], Math.max(lAnkle[1], footFloorY.left  - LIFT_EPSILON), lAnkle[2]],
@@ -74,7 +97,10 @@ function enforceFootFloor(lAnkle, rAnkle) {
   }
 }
 
-// ── Place knee correctly ───────────────────────────────
+// ── Place knee correctly ───────────────────────────────────────────────────────
+// 2-bone IK solver that constrains the knee to an anatomically correct hinge plane.
+// Uses heel/toe direction to determine the hinge axis, and pelvisFwd to ensure
+// the knee never bends forward (which would be anatomically impossible).
 function constrainKnee(hip, rawKnee, ankle, heel, toe, boneLenThigh, boneLenShin, pelvisFwd) {
   // Determine the hinge axis
   // Use the raw thigh direction as a starting approximation.
@@ -96,15 +122,12 @@ function constrainKnee(hip, rawKnee, ankle, heel, toe, boneLenThigh, boneLenShin
   // Fallback: knee bends in the world sagittal plane (forward/back)
   if (!hingeAxis) hingeAxis = norm(cross(rawThighDir, [0, 0, 1]))
 
-  // Solve the knee position as a 2-bone IK in the hinge plane
-
-  const hipToAnkle    = sub(ankle, hip)
-  const dist          = len(hipToAnkle)
-  const totalLen      = boneLenThigh + boneLenShin
+  const hipToAnkle = sub(ankle, hip)
+  const dist       = len(hipToAnkle)
+  const totalLen   = boneLenThigh + boneLenShin
 
   // If ankle is unreachable, fully extend in the hinge plane toward ankle
   if (dist >= totalLen) {
-    // Project ankle direction onto hinge plane
     const toAnkleDir = norm(hipToAnkle)
     const alongHinge = dot(toAnkleDir, hingeAxis)
     const inPlane    = norm(sub(toAnkleDir, scale(hingeAxis, alongHinge)))
@@ -142,8 +165,8 @@ function constrainKnee(hip, rawKnee, ankle, heel, toe, boneLenThigh, boneLenShin
   let planeSide = norm(cross(hingeAxis, planeFwd))
 
   // The knee always bends so the shin goes BEHIND the thigh, never in front.
-  const rawKneeOffset = sub(rawKnee, hip)
-  const rawKneeAlongH = dot(rawKneeOffset, hingeAxis)
+  const rawKneeOffset  = sub(rawKnee, hip)
+  const rawKneeAlongH  = dot(rawKneeOffset, hingeAxis)
   const rawKneeInPlane = norm(sub(rawKneeOffset, scale(hingeAxis, rawKneeAlongH)))
   // Get which side of planeFwd the knee is on
   const rawSideComponent = dot(rawKneeInPlane, planeSide)
@@ -157,53 +180,56 @@ function constrainKnee(hip, rawKnee, ankle, heel, toe, boneLenThigh, boneLenShin
     scale(planeFwd, Math.cos(effectiveHipAngle)),
     scale(planeSide, Math.sin(effectiveHipAngle))
   )
-
   return add(hip, scale(norm(kneeDir), boneLenThigh))
 }
 
-// ── Elbow: use raw MediaPipe position ────────────────────────
+// ── Elbow: use raw MediaPipe position ─────────────────────────────────────────
+// Enforces consistent upper arm length from shoulder to prevent rubbery arms,
+// while trusting MediaPipe's elbow direction estimate.
 function constrainElbow(shoulder, rawElbow, wrist, boneLenUpper, boneLenFore) {
-  // Enforce upper arm length from shoulder
-  const upperDir    = norm(sub(rawElbow, shoulder))
-  const fixedElbow  = add(shoulder, scale(upperDir, boneLenUpper))
+  const upperDir   = norm(sub(rawElbow, shoulder))
+  const fixedElbow = add(shoulder, scale(upperDir, boneLenUpper))
   return fixedElbow
 }
 
-// ── Extract and constrain all joint positions from a frame ───────────────────
-function P(lms, worldLms) {
+// ── Extract and constrain all joint positions from a frame ────────────────────
+// yawDeg: Gemini's estimated body yaw, applied to every coordinate via mp()
+// so the whole skeleton is pre-rotated to face the BVH forward axis.
+function P(lms, worldLms, yawDeg) {
   const w = worldLms
 
-  const leftHip    = mp(lms, w, 23)
-  const rightHip   = mp(lms, w, 24)
-  const leftSho    = mp(lms, w, 11)
-  const rightSho   = mp(lms, w, 12)
-  const hips       = avg(leftHip, rightHip)
-  const shoulders  = avg(leftSho, rightSho)
-  const spine      = avg(hips, shoulders)
-  const spine1     = [(hips[0]+shoulders[0]*2)/3, (hips[1]+shoulders[1]*2)/3, (hips[2]+shoulders[2]*2)/3]
-  const spine2     = shoulders
-  const leftEar    = mp(lms, w, 7)
-  const rightEar   = mp(lms, w, 8)
-  const earMid     = avg(leftEar, rightEar)
+  const leftHip   = mp(lms, w, 23, yawDeg)
+  const rightHip  = mp(lms, w, 24, yawDeg)
+  const leftSho   = mp(lms, w, 11, yawDeg)
+  const rightSho  = mp(lms, w, 12, yawDeg)
+  const hips      = avg(leftHip, rightHip)
+  const shoulders = avg(leftSho, rightSho)
+  const spine     = avg(hips, shoulders)
+  const spine1    = [(hips[0]+shoulders[0]*2)/3, (hips[1]+shoulders[1]*2)/3, (hips[2]+shoulders[2]*2)/3]
+  const spine2    = shoulders
+  const leftEar   = mp(lms, w, 7,  yawDeg)
+  const rightEar  = mp(lms, w, 8,  yawDeg)
+  const earMid    = avg(leftEar, rightEar)
 
-  // Raw ankle and wrist positions
-  const lAnkle = mp(lms, w, 27)
-  const rAnkle = mp(lms, w, 28)
-  const { lAnkle: clampedLAnkle, rAnkle: clampedRAnkle } = enforceFootFloor(lAnkle, rAnkle)
-  const lWrist = mp(lms, w, 15)
-  const rWrist = mp(lms, w, 16)
+  // Raw ankle and wrist positions, these are trusted and never moved
+  const lAnkleRaw = mp(lms, w, 27, yawDeg)
+  const rAnkleRaw = mp(lms, w, 28, yawDeg)
+  // Clamp ankles to floor plane so feet don't float
+  const { lAnkle, rAnkle } = enforceFootFloor(lAnkleRaw, rAnkleRaw)
+  const lWrist = mp(lms, w, 15, yawDeg)
+  const rWrist = mp(lms, w, 16, yawDeg)
 
   // Foot landmarks for knee hinge axis
-  const lHeel  = mp(lms, w, 29)
-  const rHeel  = mp(lms, w, 30)
-  const lToe   = mp(lms, w, 31)
-  const rToe   = mp(lms, w, 32)
+  const lHeel = mp(lms, w, 29, yawDeg)
+  const rHeel = mp(lms, w, 30, yawDeg)
+  const lToe  = mp(lms, w, 31, yawDeg)
+  const rToe  = mp(lms, w, 32, yawDeg)
 
   // Raw knee and elbow, used for initial direction estimate
-  const rawLKnee  = mp(lms, w, 25)
-  const rawRKnee  = mp(lms, w, 26)
-  const rawLElbow = mp(lms, w, 13)
-  const rawRElbow = mp(lms, w, 14)
+  const rawLKnee  = mp(lms, w, 25, yawDeg)
+  const rawRKnee  = mp(lms, w, 26, yawDeg)
+  const rawLElbow = mp(lms, w, 13, yawDeg)
+  const rawRElbow = mp(lms, w, 14, yawDeg)
 
   // Bone lengths, locked from first frame
   const bl = getBoneLengths(
@@ -211,43 +237,41 @@ function P(lms, worldLms) {
     rawLElbow, rawRElbow, lWrist, rWrist,
     leftHip, rightHip, leftSho, rightSho
   )
-  const lThighLen = bl.lThigh, rThighLen = bl.rThigh
-  const lShinLen  = bl.lShin,  rShinLen  = bl.rShin
-  const lUpperLen = bl.lUpper, rUpperLen = bl.rUpper
-  const lForeLen  = bl.lFore,  rForeLen  = bl.rFore
 
-  // ── Pelvis forward axis ──────────────────────────────────────────────────
+  // ── Pelvis forward axis ───────────────────────────────────────────────────
   // Derived from landmark geometry so it stays correct at any body angle.
   const hipRight  = norm(sub(rightHip, leftHip)) // Left hip to right hip
   const spineUp   = norm(sub(avg(leftSho, rightSho), avg(leftHip, rightHip))) // Hip midpoint to shoulder midpoint
-  // Project spineUp perpendicular to hipRight. Giving a more accurate forward direction for the pelvis, especially when the person is leaning or turned.
+  // Project spineUp perpendicular to hipRight. Giving a more accurate forward
+  // direction for the pelvis, especially when person is leaning or turned.
   const spineUpOrtho = norm(sub(spineUp, scale(hipRight, dot(spineUp, hipRight))))
-  const pelvisFwd = norm(cross(hipRight, spineUpOrtho)) // Direction the pelvis faces
+  const pelvisFwd    = norm(cross(hipRight, spineUpOrtho)) // Direction the pelvis faces
 
-  // Knee hinge constraint
-  const leftKnee  = constrainKnee(leftHip,  rawLKnee, lAnkle, lHeel, lToe, lThighLen, lShinLen, pelvisFwd)
-  const rightKnee = constrainKnee(rightHip, rawRKnee, rAnkle, rHeel, rToe, rThighLen, rShinLen, pelvisFwd)
+  // Knee hinge constraints.
+  const leftKnee  = constrainKnee(leftHip,  rawLKnee, lAnkle, lHeel, lToe, bl.lThigh, bl.lShin,  pelvisFwd)
+  const rightKnee = constrainKnee(rightHip, rawRKnee, rAnkle, rHeel, rToe, bl.rThigh, bl.rShin,  pelvisFwd)
 
-  // Elbow, enforce bone length consistency
-  const leftElbow  = constrainElbow(leftSho,  rawLElbow, lWrist, lUpperLen, lForeLen)
-  const rightElbow = constrainElbow(rightSho, rawRElbow, rWrist, rUpperLen, rForeLen)
+  // Elbow, enforce bone length consistency.
+  const leftElbow  = constrainElbow(leftSho,  rawLElbow, lWrist, bl.lUpper, bl.lFore)
+  const rightElbow = constrainElbow(rightSho, rawRElbow, rWrist, bl.rUpper, bl.rFore)
 
-  // ── Hand separation ──────────────────────────────────────────────────────
-  // If the two wrists are closer than a minimum hand-width, nudge them apart
-  const shoulderWidth  = len(sub(rightSho, leftSho))
-  const minHandSep     = shoulderWidth * 0.18
-  const wristVec       = sub(rWrist, lWrist)
-  const wristDist      = len(wristVec)
+  // ── Hand separation ───────────────────────────────────────────────────────
+  // If the two wrists are closer than a minimum hand-width, nudge them apart.
+  const shoulderWidth = len(sub(rightSho, leftSho))
+  const minHandSep    = shoulderWidth * 0.18
+  const wristVec      = sub(rWrist, lWrist)
+  const wristDist     = len(wristVec)
   let adjLWrist = lWrist, adjRWrist = rWrist
   if (wristDist < minHandSep && wristDist > 0.001) {
-    // Nudge both wrists apart along the shoulder axis by equal amounts
-    const deficit   = (minHandSep - wristDist) / 2
-    const pushDir   = norm(sub(rightSho, leftSho))
+    // Nudge both wrists apart along the shoulder axis by equal amounts.
+    const deficit  = (minHandSep - wristDist) / 2
+    const pushDir  = norm(sub(rightSho, leftSho))
     adjLWrist = sub(lWrist, scale(pushDir, deficit))
     adjRWrist = add(rWrist, scale(pushDir, deficit))
   }
 
-  // ── Foot roll limits derived from heel and toe direction ─────────────────────
+  // ── Foot roll limits derived from heel and toe direction ──────────────────
+  // Wider limits for turned-out feet, tighter for straight feet.
   const lFootVec     = sub(lToe, lHeel)
   const lShinDir     = norm(sub(lAnkle, leftKnee))
   const lFootLateral = len(lFootVec) > 0.001
@@ -279,11 +303,11 @@ function P(lms, worldLms) {
     leftUpLeg:     leftHip,
     leftLeg:       leftKnee,
     leftFoot:      lAnkle,
-    leftToeBase:   mp(lms, w, 31),
+    leftToeBase:   mp(lms, w, 31, yawDeg),
     rightUpLeg:    rightHip,
     rightLeg:      rightKnee,
     rightFoot:     rAnkle,
-    rightToeBase:  mp(lms, w, 32),
+    rightToeBase:  mp(lms, w, 32, yawDeg),
     // Roll limits per foot, (limit foot twist/roll more if foot is turned out more)
     lFootRollLimit, lFootTwistLimit,
     rFootRollLimit, rFootTwistLimit,
@@ -364,9 +388,10 @@ function buildHierarchy(off) {
 }
 
 // ── Rear-view correction ──────────────────────────────────────────────────────
-// When the camera is behind the subject, MediaPipe's x coordinates are mirrored
+// When the camera is behind the subject, MediaPipe's x coordinates are mirrored and left/right joints are swapped from the body's perspective.
+// With yaw pre-rotation active, this only fires for true rear-facing views where pelvisFwd[2] < 0 after rotation — i.e. Gemini yaw is near ±180°.
 function correctRearView(p, pelvisFwd) {
-  if (pelvisFwd[2] >= 0) return p
+  if (pelvisFwd[2] >= 0) return p // Front-facing after rotation, no correction needed
 
   // Mirror x for all joint positions, and swap left/right pairs
   const mx = ([x, y, z]) => [-x, y, z]
@@ -378,7 +403,6 @@ function correctRearView(p, pelvisFwd) {
     spine2:        mx(p.spine2),
     neck:          mx(p.neck),
     head:          mx(p.head),
-    // Swap left and right, from behind, MediaPipe's left is the body's right
     leftShoulder:  mx(p.rightShoulder),
     leftArm:       mx(p.rightArm),
     leftForeArm:   mx(p.rightForeArm),
@@ -395,7 +419,6 @@ function correctRearView(p, pelvisFwd) {
     rightLeg:      mx(p.leftLeg),
     rightFoot:     mx(p.leftFoot),
     rightToeBase:  mx(p.leftToeBase),
-    // Foot limits swap too
     lFootRollLimit:  p.rFootRollLimit,
     lFootTwistLimit: p.rFootTwistLimit,
     rFootRollLimit:  p.lFootRollLimit,
@@ -415,38 +438,46 @@ function buildMotion(frames, frameTime, off, captureFps) {
     rightUpLeg: DOWN, rightLeg: DOWN, rightFoot: DOWN, rightToeBase: FWD,
   }
 
-  // One estimator instance across all frames
+  // One estimator instance across all frames, maintains filter state so shot cuts and Gemini anchor points carry through correctly.
   const orientEst = new OrientationEstimator({ captureFps })
 
   for (const frame of frames) {
-    const enrichedFrame = orientEst.process(frame)
+    // ── Orientation estimation ─────────────────────────────────────────
+    // Uses Gemini's answer when available (high confidence), otherwise falls back to geometric heuristics from shoulder/ear/hip signals.
+    const enrichedFrame   = orientEst.process(frame)
     const { orientation } = enrichedFrame
+    const yawDeg          = wrapYaw(orientation.yaw)
 
     if (orientation.shotCut) {
-      console.log(`[BVH] Shot cut detected, yaw: ${orientation.yaw.toFixed(1)}°`)
+      console.log(`[BVH] Shot cut at frame ${frame.frameIndex}, yaw snapped to ${yawDeg.toFixed(1)}°`)
+    }
+    if (orientation.source === 'gemini') {
+      console.log(`[BVH] Gemini orientation: ${orientation.view} (${yawDeg.toFixed(1)}°)`)
     }
 
-    // P() applies hinge constraints before returning joint positions
-    const pRaw = P(frame.landmarks, frame.worldLandmarks)
-    
-    // Compute pelvisFwd for rear-view detection (reuse from P's internal geometry)
+    // ── Solve joints with yaw pre-rotation ─────────────────────────────
+    // All coordinates are rotated by -yawDeg before IK solving so the whole skeleton naturally faces the BVH forward axis.
+    const pRaw = P(frame.landmarks, frame.worldLandmarks, yawDeg)
+
+    // ── Rear-view binary correction ────────────────────────────────────
+    // After pre-rotation, this only fires for true rear views (yaw ≈ ±180°).
     const lh = pRaw.leftUpLeg, rh = pRaw.rightUpLeg
     const ls = pRaw.leftShoulder, rs = pRaw.rightShoulder
     const hipRight     = norm(sub(rh, lh))
     const spineUp      = norm(sub(avg(ls, rs), avg(lh, rh)))
     const spineUpOrtho = norm(sub(spineUp, scale(hipRight, dot(spineUp, hipRight))))
     const pelvisFwd    = norm(cross(hipRight, spineUpOrtho))
-
     const p            = correctRearView(pRaw, pelvisFwd)
-    const vals         = []
 
-    // ── Hips ──────────────────────────────────────────────────────────────
+    const vals = []
+
+    // ── Hips ───────────────────────────────────────────────────────────
     vals.push(...p.hips)
-    const spineDir   = sub(p.spine, p.hips)
-    const hipsRot     = quatFromTo(REST.spine, norm(spineDir))
+    const spineDir = sub(p.spine, p.hips)
+    const hipsRot  = quatFromTo(REST.spine, norm(spineDir))
     vals.push(...quatToZXY(hipsRot))
 
-    // ── Spine chain ───────────────────────────────────────────────────────
+    // ── Spine chain ────────────────────────────────────────────────────
     const spine1Dir   = sub(p.spine1, p.spine)
     const spineRot    = quatFromTo(quatRotate(hipsRot, REST.spine1), norm(spine1Dir))
     const spineLocal  = quatMul(quatConj(hipsRot), quatMul(spineRot, hipsRot))
@@ -479,7 +510,7 @@ function buildMotion(frames, frameTime, off, captureFps) {
     const spineWorld2 = neckWorld
     vals.push(0, 0, 0)
 
-    // ── Left arm ──────────────────────────────────────────────────────────
+    // ── Left arm ───────────────────────────────────────────────────────
     const lShoDir   = sub(p.leftShoulder, p.spine2)
     const lShoRot   = quatFromTo(quatRotate(spineWorld2, REST.leftShoulder), norm(lShoDir))
     const lShoLocal = quatMul(quatConj(spineWorld2), quatMul(lShoRot, spineWorld2))
@@ -498,7 +529,7 @@ function buildMotion(frames, frameTime, off, captureFps) {
     vals.push(...quatToZXY(lFALocal))
     vals.push(0, 0, 0)
 
-    // ── Right arm ─────────────────────────────────────────────────────────
+    // ── Right arm ──────────────────────────────────────────────────────
     const rShoDir   = sub(p.rightShoulder, p.spine2)
     const rShoRot   = quatFromTo(quatRotate(spineWorld2, REST.rightShoulder), norm(rShoDir))
     const rShoLocal = quatMul(quatConj(spineWorld2), quatMul(rShoRot, spineWorld2))
@@ -517,47 +548,47 @@ function buildMotion(frames, frameTime, off, captureFps) {
     vals.push(...quatToZXY(rFALocal))
     vals.push(0, 0, 0)
 
-    // ── Left leg ──────────────────────────────────────────────────────────
+    // ── Left leg ───────────────────────────────────────────────────────
     const lULDir   = sub(p.leftLeg, p.leftUpLeg) // Constrained knee
     const lULRot   = quatFromTo(quatRotate(hipsRot, REST.leftUpLeg), norm(lULDir))
     const lULLocal = quatMul(quatConj(hipsRot), quatMul(lULRot, hipsRot))
     vals.push(...quatToZXY(lULLocal))
     const lULWorld = quatMul(hipsRot, lULLocal)
 
-    const lLDir    = sub(p.leftFoot, p.leftLeg)
-    const lLRot    = quatFromTo(quatRotate(lULWorld, REST.leftLeg), norm(lLDir))
-    const lLLocal  = quatMul(quatConj(lULWorld), quatMul(lLRot, lULWorld))
+    const lLDir   = sub(p.leftFoot, p.leftLeg)
+    const lLRot   = quatFromTo(quatRotate(lULWorld, REST.leftLeg), norm(lLDir))
+    const lLLocal = quatMul(quatConj(lULWorld), quatMul(lLRot, lULWorld))
     vals.push(...quatToZXY(lLLocal))
     const lLWorld = quatMul(lULWorld, lLLocal)
 
-    const lFDir    = sub(p.leftToeBase, p.leftFoot)
-    const lFRot    = quatFromTo(quatRotate(lLWorld, REST.leftFoot), norm(lFDir))
-    const lFLocal  = quatMul(quatConj(lLWorld), quatMul(lFRot, lLWorld))
-    let lFEuler = quatToZXY(lFLocal)
-    // Different limits, wider for turned-out feet, tighter for straight feet
-    lFEuler[0]     = Math.max(-p.lFootRollLimit,  Math.min(p.lFootRollLimit,  lFEuler[0]))
-    lFEuler[2]     = Math.max(-p.lFootTwistLimit, Math.min(p.lFootTwistLimit, lFEuler[2]))
+    const lFDir   = sub(p.leftToeBase, p.leftFoot)
+    const lFRot   = quatFromTo(quatRotate(lLWorld, REST.leftFoot), norm(lFDir))
+    const lFLocal = quatMul(quatConj(lLWorld), quatMul(lFRot, lLWorld))
+    let lFEuler   = quatToZXY(lFLocal)
+    // Different limits, wider for turned-out feet, tighter for straight feet.
+    lFEuler[0]    = Math.max(-p.lFootRollLimit,  Math.min(p.lFootRollLimit,  lFEuler[0]))
+    lFEuler[2]    = Math.max(-p.lFootTwistLimit, Math.min(p.lFootTwistLimit, lFEuler[2]))
     vals.push(...lFEuler)
     vals.push(0, 0, 0)
 
-    // ── Right leg ─────────────────────────────────────────────────────────
+    // ── Right leg ──────────────────────────────────────────────────────
     const rULDir   = sub(p.rightLeg, p.rightUpLeg) // Constrained knee
     const rULRot   = quatFromTo(quatRotate(hipsRot, REST.rightUpLeg), norm(rULDir))
     const rULLocal = quatMul(quatConj(hipsRot), quatMul(rULRot, hipsRot))
     vals.push(...quatToZXY(rULLocal))
     const rULWorld = quatMul(hipsRot, rULLocal)
 
-    const rLDir    = sub(p.rightFoot, p.rightLeg)
-    const rLRot    = quatFromTo(quatRotate(rULWorld, REST.rightLeg), norm(rLDir))
-    const rLLocal  = quatMul(quatConj(rULWorld), quatMul(rLRot, rULWorld))
+    const rLDir   = sub(p.rightFoot, p.rightLeg)
+    const rLRot   = quatFromTo(quatRotate(rULWorld, REST.rightLeg), norm(rLDir))
+    const rLLocal = quatMul(quatConj(rULWorld), quatMul(rLRot, rULWorld))
     vals.push(...quatToZXY(rLLocal))
-    const rLWorld  = quatMul(rULWorld, rLLocal)
-    
+    const rLWorld = quatMul(rULWorld, rLLocal)
+
     const rFDir   = sub(p.rightToeBase, p.rightFoot)
     const rFRot   = quatFromTo(quatRotate(rLWorld, REST.rightFoot), norm(rFDir))
     const rFLocal = quatMul(quatConj(rLWorld), quatMul(rFRot, rLWorld))
     let rFEuler   = quatToZXY(rFLocal)
-    // Different limits, wider for turned-out feet, tighter for straight feet
+    // Different limits, wider for turned-out feet, tighter for straight feet.
     rFEuler[0]    = Math.max(-p.rFootRollLimit,  Math.min(p.rFootRollLimit,  rFEuler[0]))
     rFEuler[2]    = Math.max(-p.rFootTwistLimit, Math.min(p.rFootTwistLimit, rFEuler[2]))
     vals.push(...rFEuler)
@@ -572,11 +603,28 @@ function buildMotion(frames, frameTime, off, captureFps) {
 // ── Public ────────────────────────────────────────────────────────────────────
 export function exportBVH(frames, captureFps) {
   if (!frames?.length) return
+  console.log(`[BVH] Exporting ${frames.length} frames at ${captureFps} FPS`)
+  resetBoneLengthCache()
+  resetFootFloor()
   const off = getRestOffsets()
-  const bvh = buildHierarchy(off) + '\n' + buildMotion(frames, 1 / captureFps, off)
+  const bvh = buildHierarchy(off) + '\n' + buildMotion(frames, 1 / captureFps, off, captureFps)
   const blob = new Blob([bvh], { type: 'text/plain' })
   const url  = URL.createObjectURL(blob)
-  const a = document.createElement('a')
+  const a    = document.createElement('a')
   a.href = url; a.download = 'pose_sequence.bvh'; a.click()
   URL.revokeObjectURL(url)
+  console.log('[BVH] Export complete')
+}
+
+// ── Single-image export ────────────────────────────────────────────────────────
+export function exportSingleImageBVH(landmark, worldLandmark, geminiOrientation, captureFps = 30) {
+  if (!landmark) return
+  const frame = {
+    frameIndex:        0,
+    landmarks:         landmark,
+    worldLandmarks:    worldLandmark,
+    geminiOrientation: geminiOrientation,
+  }
+  console.log(`[BVH] Exporting single image with orientation:`, geminiOrientation)
+  exportBVH([frame], captureFps)
 }
