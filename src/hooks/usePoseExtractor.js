@@ -262,16 +262,20 @@ export function usePoseExtractor() {
 
     setStatus('prescanning')
 
-    // ── Gemini person identification on first frame ────────────────────────
-    // Ask Gemini to identify how many people are in the video and where they
-    // are, giving a more accurate count and description than MediaPipe alone.
-    video.currentTime = 0
-    await new Promise((r) => { video.onseeked = r })
-    const videoId = file.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()
-    const geminiPeople = await identifyPersons(video, videoId, 0)
-    if (geminiPeople?.persons?.length > 0) {
-      setGeminiPersons(geminiPeople.persons)
-      console.log(`[Gemini] Identified ${geminiPeople.total_count} person(s) in first frame`)
+    // Read toggle preference right before execution loop
+    const isLocalMode = localStorage.getItem('use_local_backend') === 'true'
+
+    if (!isLocalMode) {
+      video.currentTime = 0
+      await new Promise((r) => { video.onseeked = r })
+      const videoId = file.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()
+      const geminiPeople = await identifyPersons(video, videoId, 0)
+      if (geminiPeople?.persons?.length > 0) {
+        setGeminiPersons(geminiPeople.persons)
+        console.log(`[Gemini] Identified ${geminiPeople.total_count} person(s) in first frame`)
+      }
+    } else {
+      console.log('[Pipeline] Local Mode Active: Skipping Gemini identification pass.')
     }
 
     const results = []
@@ -395,11 +399,10 @@ export function usePoseExtractor() {
       ? normaliseLandmarks(result.worldLandmarks[0])
       : null
 
-    // ── Gemini limb completion for images ─────────────────────────────────
-    // Images often have partially visible people (cropped, occluded).
-    // Gemini can reason about what the hidden limbs likely look like.
+    const isLocalMode = localStorage.getItem('use_local_backend') === 'true'
     const hasLowConfidence = landmarks.some(lm => (lm.v ?? 1) < 0.4)
-    if (hasLowConfidence) {
+
+    if (hasLowConfidence && !isLocalMode) {
       const imageId   = file.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()
       const completion = await completeLimbs(canvas, imageId, 0, landmarks)
       if (completion?.corrections?.length) {
@@ -478,19 +481,21 @@ export function usePoseExtractor() {
     // re-processing the same video reuses Gemini's previous orientation answers.
     const videoId = file.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()
 
-    // Gemini orientation: sample at 1fps regardless of captureFps.
-    // Orientation changes slowly enough that 1fps is sufficient, and this avoids hammering the Gemini API on every frame.
+    // Capture the static local mode check parameter.
     let lastOrientationTime    = -1
-    const ORIENTATION_INTERVAL = 1  // Seconds between Gemini orientation calls
+    const ORIENTATION_INTERVAL = 1  
 
     // Gemini limb completion: throttled to at most once per 2 seconds.
     // Limb completion calls are expensive so only trigger when needed and not too frequently so processing stays fast.
     let lastLimbCompletionTime    = -2
-    const LIMB_COMPLETION_INTERVAL = 2  // Seconds
+    const LIMB_COMPLETION_INTERVAL = 2 // Seconds
 
     let seedLocked = seed === null
     const captured = []
     let frameIndex = 0
+
+    // Capture the static local mode check parameter
+    const isLocalMode = localStorage.getItem('use_local_backend') === 'true'
 
     for (let t = 0; t < videoDuration; t += frameStep) {
       // Exit if user cancels
@@ -524,26 +529,32 @@ export function usePoseExtractor() {
           // Ask Gemini which way the person is facing. 
           // The answer gets used by OrientationEstimator in exportBVH to rotate the hips bone correctly.
           let geminiOrientation = null
-          if (t - lastOrientationTime >= ORIENTATION_INTERVAL) {
-            lastOrientationTime = t
-            geminiOrientation = await getOrientation(video, videoId, frameIndex)
-          }
+          
+          // Condition backend calls on local mode toggle status
+          if (!isLocalMode) {
+            // ── Cloud API Path ──
+            if (t - lastOrientationTime >= ORIENTATION_INTERVAL) {
+              lastOrientationTime = t
+              geminiOrientation = await getOrientation(video, videoId, frameIndex)
+            }
 
-          // ── Gemini limb completion (throttled, when landmarks are hidden) ─
-          // When MediaPipe can't see a joint (visibility < 0.4, e.g. behind another person or off-frame), 
-          // Gemini estimates its position from the visual context and the visible anatomy.
-          const hasLowConfidence = landmarks.some(lm => (lm.v ?? 1) < 0.4)
-          if (hasLowConfidence && t - lastLimbCompletionTime >= LIMB_COMPLETION_INTERVAL) {
-            lastLimbCompletionTime = t
-            const completion = await completeLimbs(video, videoId, frameIndex, landmarks)
-            if (completion?.corrections?.length) {
-              landmarks = applyLimbCorrections(landmarks, completion.corrections)
+            const hasLowConfidence = landmarks.some(lm => (lm.v ?? 1) < 0.4)
+            if (hasLowConfidence && t - lastLimbCompletionTime >= LIMB_COMPLETION_INTERVAL) {
+              lastLimbCompletionTime = t
+              const completion = await completeLimbs(video, videoId, frameIndex, landmarks)
+              if (completion?.corrections?.length) {
+                landmarks = applyLimbCorrections(landmarks, completion.corrections)
+              }
+            }
+          } else {
+            // ── Local Fallback Mode Path ──
+            // Inject instantaneous local tracking markers to bypass cloud calculations entirely
+            if (t - lastOrientationTime >= ORIENTATION_INTERVAL) {
+              lastOrientationTime = t
+              geminiOrientation = { source: 'local_fallback', yaw: 0, view: 'front', shotCut: false }
             }
           }
 
-          // ── Filter + store frame ───────────────────────────────────────
-          // One Euro Filter runs on the (already Gemini-corrected) landmarks.
-          // geminiOrientation is attached so exportBVH's OrientationEstimator can use it.
           const filteredFrame = filterBankRef.current.filter({
             frameIndex,
             timeMs: Math.round(t * 1000),
@@ -560,7 +571,7 @@ export function usePoseExtractor() {
       if (frameIndex % 10 === 0) await new Promise((r) => setTimeout(r, 0))
     }
 
-    // Exit if user cancels
+    // Exit if user cancels    
     if (isCancelledRef.current) return
 
     URL.revokeObjectURL(video.src)
@@ -576,15 +587,14 @@ export function usePoseExtractor() {
 
     const finalFrames = subsampleFrames(keyframes, maxFrames)
 
-    // Compute orientation summary for the stats panel
+    // Compute orientation summary for the stats panel.
     const viewCounts = finalFrames.reduce((acc, f) => {
       const v = f.orientation?.view ?? 'unknown'
       acc[v] = (acc[v] || 0) + 1
       return acc
     }, {})
     const shotCuts = finalFrames.filter(f => f.orientation?.shotCut).length
-
-    // Count how many frames had Gemini orientation data (vs heuristic fallback)
+    // Count how many frames had Gemini orientation data (vs heuristic fallback).
     const geminiOrientationFrames = finalFrames.filter(f => f.geminiOrientation).length
 
     setFrames(finalFrames)
@@ -602,16 +612,19 @@ export function usePoseExtractor() {
     setStatus('done')
     scrollToRef(statsSummaryRef)
 
-    // ── Save session to MongoDB ──────────────────────────────────────────────
-    // Persists the session so the user can retrieve it later without reprocessing.
-    saveSession(videoId, finalFrames.length, {
-      duration:      videoDuration.toFixed(2),
-      captureFps,
-      frameCount:    finalFrames.length,
-      shotCuts,
-      viewCounts,
-      geminiOrientationFrames,
-    })
+    // Save session database call logic.
+    if (!isLocalMode) {
+      saveSession(videoId, finalFrames.length, {
+        duration:      videoDuration.toFixed(2),
+        captureFps,
+        frameCount:    finalFrames.length,
+        shotCuts,
+        viewCounts,
+        geminiOrientationFrames,
+      })
+    } else {
+      console.log('[Pipeline] Local Mode Active: Skipping MongoDB cloud save session synchronization.')
+    }
   }, [])
 
   return {

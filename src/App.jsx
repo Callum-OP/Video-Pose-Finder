@@ -25,7 +25,7 @@ const STATUS_LABEL = {
   error:           '✕ Error',
 }
 
- const backendUrl = import.meta.env.VITE_BACKEND_URL
+const backendUrl = import.meta.env.VITE_BACKEND_URL
 
 function StatBox({ label, value, unit }) {
   return (
@@ -52,6 +52,12 @@ export default function App() {
   const [settings, setSettings] = useState(DEFAULT_SETTINGS)
   const [lastFile, setLastFile] = useState(null)
   const [showModal, setShowModal] = useState(false)
+  
+  // Track local mode status via state from localStorage
+  const [useLocalBackend, setUseLocalBackend] = useState(
+    () => localStorage.getItem('use_local_backend') === 'true'
+  )
+
   const pendingFileRef = useRef(null)
   const inputRef = useRef(null)
 
@@ -59,9 +65,16 @@ export default function App() {
     setSettings((prev) => ({ ...prev, [key]: value }))
   }
 
+  // Handle setting updates for the local fallback toggle
+  function handleLocalBackendToggle(e) {
+    const checked = e.target.checked
+    setUseLocalBackend(checked)
+    localStorage.setItem('use_local_backend', checked)
+  }
+
   function handleFile(file) {
     if (!file) return
-
+    
     // Image, skip the modal, go straight to single-frame extraction
     if (file.type.startsWith('image/')) {
       setLastFile(file)
@@ -149,14 +162,15 @@ export default function App() {
         )}
       </div>
 
-      {backendUrl && (
+      {/* System Engine Status Notifications */}
+      {backendUrl && !useLocalBackend && (
         <div className="text-xs font-mono text-center mb-4" style={{ color: '#39e8a0' }}>
-          ✓ AI backend active — orientation correction, limb completion enabled<br></br><br></br>
+          ✓ AI backend active <br></br><br></br>
         </div>
       )}
-      {!backendUrl && (
-        <div className="text-xs font-mono text-center mb-4" style={{ color: '#4a4a6a' }}>
-          ○ Running in local mode — front-facing video recommended<br></br><br></br>
+      {(useLocalBackend || !backendUrl) && (
+        <div className="text-xs font-mono text-center mb-4" style={{ color: '#f5a623' }}>
+          ○ Running in local mode <br></br><br></br>
         </div>
       )}
 
@@ -171,6 +185,35 @@ export default function App() {
             Reset Defaults
           </button>
         </div>
+        
+        {/* Local Processing Bypass Toggle Box */}
+        <div style={{
+          display: 'flex', 
+          alignItems: 'center', 
+          justifyContent: 'space-between', 
+          padding: '12px', 
+          background: '#1a1a2e', 
+          border: '1px solid #333', 
+          borderRadius: '6px', 
+          marginBottom: '20px'
+        }}>
+          <div>
+            <span style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', color: '#fff' }}>
+              Force Local Processing Mode
+            </span>
+            <span style={{ fontSize: '11px', color: '#888' }}>
+              Bypasses remote server APIs entirely.
+            </span>
+          </div>
+          <input 
+            type="checkbox" 
+            checked={useLocalBackend}
+            disabled={isProcessing}
+            onChange={handleLocalBackendToggle}
+            style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+          />
+        </div>
+
         <div className="settings__grid">
 
           <div className="setting">
@@ -248,7 +291,7 @@ export default function App() {
           <input
             ref={inputRef}
             type="file"
-            accept="video/*,image/jpeg,image/png,image/webp"  // ← add image types
+            accept="video/*,image/jpeg,image/png,image/webp"
             style={{ display: 'none' }}
             onChange={(e) => handleFile(e.target.files[0])}
           />
@@ -327,7 +370,7 @@ export default function App() {
       <div ref={statsSummaryRef}>
         {stats && (
           <div id="stats-summary-section" className="stats-row">
-            <StatBox label="Sampled"   value={stats.totalSampled}  unit={`@ ${stats.captureFps}fps`} />
+            <StatBox label="Sampled"   value={stats.totalSampled}   unit={`@ ${stats.captureFps}fps`} />
             <StatBox label="Confident" value={stats.capturedCount} unit="frames" />
             <StatBox label="Keyframes" value={stats.keyframeCount} unit="unique" />
             <StatBox label="Final"     value={stats.frameCount}    unit="kept" />
