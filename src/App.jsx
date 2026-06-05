@@ -202,7 +202,7 @@ export default function App() {
               Force Local Processing Mode
             </span>
             <span style={{ fontSize: '11px', color: '#888' }}>
-              Bypasses remote server APIs entirely.
+              Bypasses remote server APIs entirely. This is only relevant if you have connected to a backend.
             </span>
           </div>
           <input 

@@ -27,10 +27,9 @@ The first frame of the pose sequence appears mangled and incorrect (but only if 
 
 
 # Features To Consider
-Add a toggle to enable or disable backend integration, will make it easier to compare the difference 
 Have a scroller to choose when the animation they want starts and ends.
 
-Allow gifs to be imported?
+Allow gifs to be imported? Although might not be worth the memory and code required to convert it.
 
 Have Gemini be more involved in identifying and correctly tracking several people at least for the initial first frame?
 
