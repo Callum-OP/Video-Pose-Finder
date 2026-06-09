@@ -27,6 +27,8 @@ The first frame of the pose sequence appears mangled and incorrect (but only if 
 
 
 # Features To Consider
+Add a toggle to enable/disable hand poses?
+
 Have a scroller to choose when the animation they want starts and ends.
 
 Allow gifs to be imported? Although might not be worth the memory and code required to convert it.
