@@ -758,8 +758,14 @@ function buildMotion(frames, frameTime, off, captureFps) {
     const spineWorld2Base = quatMul(spineWorld1, spine1Local)
     const actualShoVec    = norm(sub(p.rightShoulder, p.leftShoulder))
     const expectedShoVec  = quatRotate(spineWorld2Base, norm(off.rightShoulder))
+    
+    // Detect inversion such as if gravity or spine points upside down, 
+    // compensate for the 2D projection flip so the shoulders don't twist 180°
+    const isInverted = (gravityAngleDeg > 135 && gravityAngleDeg < 225) || (spineDir[1] < 0);
+    const projectionFactor = isInverted ? -1 : 1;
+
     const twistQuat       = quatFromTo(
-      norm([expectedShoVec[0], 0, expectedShoVec[2]]),
+      norm([expectedShoVec[0], 0, expectedShoVec[2] * projectionFactor]),
       norm([actualShoVec[0],   0, actualShoVec[2]])
     )
     const neckDir_        = sub(p.neck, p.spine2)
