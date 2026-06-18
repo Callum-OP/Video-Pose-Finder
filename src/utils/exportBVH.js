@@ -218,7 +218,7 @@ function constrainElbow(shoulder, rawElbow, wrist, boneLenUpper, boneLenFore) {
 }
 
 // ── Extract and constrain all joint positions from a frame ────────────────────
-function P(lms, worldLms, yawDeg, gravityAngleDeg = 0, geminiOrientation = null, geminiHandPoses = null) {
+function P(lms, worldLms, yawDeg, gravityAngleDeg = 0, geminiOrientation = null, geminiHandPoses = null, boneLengths = null) {
   const w = worldLms;
 
   const leftHip = mp(lms, w, 23, yawDeg, gravityAngleDeg);
@@ -273,7 +273,14 @@ function P(lms, worldLms, yawDeg, gravityAngleDeg = 0, geminiOrientation = null,
   const lToe = mp(lms, w, 31, yawDeg, gravityAngleDeg);
   const rToe = mp(lms, w, 32, yawDeg, gravityAngleDeg);
 
-  const bl = getBoneLengths(rawLKnee, rawRKnee, lAnkle, rAnkle, rawLElbow, rawRElbow, lWrist, rWrist, leftHip, rightHip, leftSho, rightSho);
+  // getBoneLengths is still called (it populates the frame-0 cache used by the
+  // occlusion-fallback synthesis above), then robust median lengths from the full
+  // sequence override it where available. Merging means a bone the medians lack
+  // (never confident in any frame) falls back to the cached value instead of NaN.
+  const bl = {
+    ...getBoneLengths(rawLKnee, rawRKnee, lAnkle, rAnkle, rawLElbow, rawRElbow, lWrist, rWrist, leftHip, rightHip, leftSho, rightSho),
+    ...(boneLengths || {}),
+  };
 
   const leftKnee = constrainKnee(leftHip, rawLKnee, lAnkle, lHeel, lToe, bl.lThigh, bl.lShin, pelvisFwd);
   const rightKnee = constrainKnee(rightHip, rawRKnee, rAnkle, rHeel, rToe, bl.rThigh, bl.rShin, pelvisFwd);
@@ -686,7 +693,7 @@ function emitFingerRotations(fingerAngles, side) {
   return vals
 }
 
-function buildMotion(frames, frameTime, off, captureFps) {
+function buildMotion(frames, frameTime, off, captureFps, boneLengths = null) {
   const lines = ['MOTION', `Frames: ${frames.length}`, `Frame Time: ${f(frameTime)}`]
   const DOWN = [0, -1, 0], FWD = [0, 0, 1]
   const REST = {
@@ -724,7 +731,8 @@ function buildMotion(frames, frameTime, off, captureFps) {
       yawDeg,
       gravityAngleDeg,
       frame.geminiGravityOrientation,
-      frame.geminiHandPoses
+      frame.geminiHandPoses,
+      boneLengths
     )
 
     const lh = pRaw.leftUpLeg, rh = pRaw.rightUpLeg
@@ -893,13 +901,13 @@ function buildMotion(frames, frameTime, off, captureFps) {
 // ── Public ────────────────────────────────────────────────────────────────────
 // clipName: optional snake_case string from Gemini's /name-clip endpoint.
 // If provided, the downloaded file is named after the detected activity instead of "pose_sequence".
-export function exportBVH(frames, captureFps, clipName = null) {
+export function exportBVH(frames, { captureFps = 30, clipName = null, boneLengths = null } = {}) {
   if (!frames?.length) return
   console.log(`[BVH] Exporting ${frames.length} frames at ${captureFps} FPS`)
   resetBoneLengthCache()
   resetFootFloor()
   const off      = getRestOffsets()
-  const bvh      = buildHierarchy(off) + '\n' + buildMotion(frames, 1 / captureFps, off, captureFps)
+  const bvh      = buildHierarchy(off) + '\n' + buildMotion(frames, 1 / captureFps, off, captureFps, boneLengths)
   const blob     = new Blob([bvh], { type: 'text/plain' })
   const url      = URL.createObjectURL(blob)
   const a        = document.createElement('a')
@@ -921,5 +929,5 @@ export function exportSingleImageBVH(landmark, worldLandmark, geminiOrientation,
     geminiFingerPoses: geminiFingerPoses,
   }
   console.log(`[BVH] Exporting single image with orientation:`, geminiOrientation)
-  exportBVH([frame], captureFps)
+  exportBVH([frame], { captureFps })
 }

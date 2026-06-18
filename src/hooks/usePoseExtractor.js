@@ -1,6 +1,7 @@
 import { useRef, useState, useCallback } from 'react'
 import { PoseLandmarker, HandLandmarker, FilesetResolver } from '@mediapipe/tasks-vision'
 import { LandmarkFilterBank } from '../utils/oneEuroFilter'
+import { temporalGapFill } from '../utils/poseCleanup'
 import { getOrientation, getGravityOrientation, identifyPersons, completeLimbs, saveSession, getHandPoses, getFingerPoses, nameClip, snapshotVideoFrame } from '../utils/poseFinderAgent'
 
 // MediaPipe landmark indices for the connections that'll be drawn.
@@ -32,16 +33,23 @@ export const NAMED_JOINTS = {
 
 // These are the default settings the user will be able to adjust them in the UI later.
 export const DEFAULT_SETTINGS = {
-  captureFps:          30,   // Samples per second taken from the video.
-  confidenceThreshold: 0.5,  // Min accepted amount of visibility to keep a frame/pose.
-  keyframeThreshold:   0.04, // Min accepted amount of joint movement (0–1 normalised) to keep a frame/pose.
-  maxFrames:           200,  // The number of frames/poses to keep.
+  captureFps:          30,    // Samples per second taken from the video.
+  confidenceThreshold: 0.5,   // Min accepted amount of visibility to keep a frame/pose.
+  keyframeThreshold:   0.04,  // Min accepted amount of joint movement (0–1 normalised) to keep a frame/pose.
+  maxFrames:           200,   // The number of frames/poses to keep.
+  modelQuality:        'full', // Pose model: 'lite' | 'full' | 'heavy' — higher = more accurate, slower.
 }
 
 export const PERSON_COLORS = ['#7c6cff', '#39e8a0', '#f5a623', '#ff4d6d']
 
-const MODEL_URL =
-  'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task'
+// Pose landmarker model variants. Heavy is the most accurate, lite the fastest.
+export const MODEL_URLS = {
+  lite:  'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+  full:  'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task',
+  heavy: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task',
+}
+const poseModelUrl = (quality) => MODEL_URLS[quality] ?? MODEL_URLS.full
+
 const HAND_MODEL_URL =
   'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task'
 const WASM_URL =
@@ -83,6 +91,59 @@ function subsampleFrames(frames, maxFrames) {
   if (frames.length <= maxFrames) return frames
   const step = (frames.length - 1) / (maxFrames - 1)
   return Array.from({ length: maxFrames }, (_, i) => frames[Math.round(i * step)])
+}
+
+// ── Robust per-bone lengths from the whole sequence ───────────────────────────
+// MediaPipe landmark index pairs for each constrained bone, matching the keys
+// getBoneLengths() returns in exportBVH.js.
+const BONE_PAIRS = {
+  lThigh: [23, 25], rThigh: [24, 26],
+  lShin:  [25, 27], rShin:  [26, 28],
+  lUpper: [11, 13], rUpper: [12, 14],
+  lFore:  [13, 15], rFore:  [14, 16],
+}
+// Must match SCALE in exportBVH.js — bone length is rotation/sign invariant, so
+// the only space difference between raw world landmarks and exportBVH's internal
+// coordinates is this uniform ×100 scale.
+const BONE_SCALE = 100
+
+function median(values) {
+  if (!values.length) return null
+  const s = [...values].sort((a, b) => a - b)
+  const mid = Math.floor(s.length / 2)
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2
+}
+
+// Compute the median length of each bone over frames where both endpoints are
+// confident, in exportBVH's scaled space. Replaces exportBVH's fragile
+// "cache from the first frame" behaviour (the first frame is often the mangled
+// one, which previously poisoned every limb length for the whole clip).
+export function computeMedianBoneLengths(frames, confidenceThreshold) {
+  const samples = {}
+  for (const key of Object.keys(BONE_PAIRS)) samples[key] = []
+
+  for (const frame of frames) {
+    const w = frame.worldLandmarks
+    if (!w) continue
+    const lms = frame.landmarks
+    for (const [key, [a, b]] of Object.entries(BONE_PAIRS)) {
+      const wa = w[a]; const wb = w[b]
+      if (!wa || !wb) continue
+      const va = lms?.[a]?.v ?? 1; const vb = lms?.[b]?.v ?? 1
+      if (va < confidenceThreshold || vb < confidenceThreshold) continue
+      const dx = wa.x - wb.x; const dy = wa.y - wb.y; const dz = wa.z - wb.z
+      const len = Math.sqrt(dx * dx + dy * dy + dz * dz) * BONE_SCALE
+      if (len > 0 && Number.isFinite(len)) samples[key].push(len)
+    }
+  }
+
+  const out = {}
+  let any = false
+  for (const key of Object.keys(BONE_PAIRS)) {
+    const m = median(samples[key])
+    if (m) { out[key] = m; any = true }
+  }
+  return any ? out : null
 }
 
 // Hip midpoint, used as the seed position for tracking.
@@ -196,6 +257,55 @@ function computeFingerAnglesFromLandmarks(handLms) {
   }
 }
 
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms))
+}
+
+// Tri-state cache for whether requestVideoFrameCallback actually fires on our
+// offscreen processing <video>: null = unprobed, true = works, false = times out.
+// A detached (never-in-DOM) video often never presents frames, so rVFC never
+// fires; without this probe we'd pay the full rVFC timeout on EVERY frame, which
+// dominates processing time on long clips. Capability is stable per browser, so
+// one probe per session is enough.
+let _rvfcWorks = null
+
+// ── Seek a video and wait until the target frame is actually decoded ──────────
+// Seeking alone does not guarantee the decoder has *painted* the seeked frame, so
+// MediaPipe can read a stale/garbage frame — this is the root cause of the
+// "first frame appears mangled" bug and a general source of per-frame error.
+// We:
+//   1. attach the `seeked` listener BEFORE setting currentTime (the old
+//      `video.onseeked = r` assignment could miss an event fired too early),
+//   2. race it against a 1s timeout so a missed event can never hang the loop,
+//   3. await one requestVideoFrameCallback the FIRST time only as a probe; if it
+//      doesn't fire we stop using it for the rest of the run (the `seeked` event
+//      plus the canvas snapshot already guarantee frame stability).
+// snapshotVideoFrame remains the real frame-stability guarantee; rVFC just
+// maximises the chance the snapshot holds the seeked frame.
+async function seekToFrame(video, t) {
+  // At t=0 the decoder often hasn't painted yet, and seeking to the current time
+  // (0) may not fire `seeked` at all — nudge to a tiny epsilon so it does.
+  const target = t <= 0 ? Math.min(0.001, video.duration || 0.001) : t
+
+  const seeked = new Promise((resolve) => {
+    video.addEventListener('seeked', resolve, { once: true })
+  })
+  video.currentTime = target
+  await Promise.race([seeked, sleep(1000)])
+
+  // Skip rVFC once we've learned it never fires on this detached video.
+  if (_rvfcWorks === false || typeof video.requestVideoFrameCallback !== 'function') return
+
+  // Probe (longer budget) once; afterwards trust the cached result with a short
+  // budget so a stray slow frame can't stall the loop.
+  const budget = _rvfcWorks === null ? 250 : 50
+  const fired = await Promise.race([
+    new Promise((resolve) => video.requestVideoFrameCallback(() => resolve(true))),
+    sleep(budget).then(() => false),
+  ])
+  if (_rvfcWorks === null) _rvfcWorks = fired
+}
+
 // Main Public Hook
 export function usePoseExtractor() {
   const landmarkerRef     = useRef(null)
@@ -259,7 +369,7 @@ export function usePoseExtractor() {
     setStatus('idle')
   }, [])
 
-  async function createLandmarker(numPoses) {
+  async function createLandmarker(numPoses, modelQuality = 'full') {
     if (!visionRef.current) {
       setStatus('loading-model')
       visionRef.current = await FilesetResolver.forVisionTasks(WASM_URL)
@@ -269,7 +379,7 @@ export function usePoseExtractor() {
       landmarkerRef.current = null
     }
     const landmarker = await PoseLandmarker.createFromOptions(visionRef.current, {
-      baseOptions: { modelAssetPath: MODEL_URL, delegate: 'GPU' },
+      baseOptions: { modelAssetPath: poseModelUrl(modelQuality), delegate: 'GPU' },
       runningMode: 'VIDEO',
       numPoses,
       minPoseDetectionConfidence: 0.4,
@@ -393,8 +503,7 @@ export function usePoseExtractor() {
     const isLocalMode = localStorage.getItem('use_local_backend') === 'true'
 
     if (!isLocalMode) {
-      video.currentTime = 0
-      await new Promise((r) => { video.onseeked = r })
+      await seekToFrame(video, 0)
       const videoId      = file.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()
       const geminiPeople = await identifyPersons(video, videoId, 0)
       if (geminiPeople?.persons?.length > 0) {
@@ -418,8 +527,7 @@ export function usePoseExtractor() {
         return
       }
 
-      video.currentTime = t
-      await new Promise((r) => { video.onseeked = r })
+      await seekToFrame(video, t)
 
       // ── Canvas snapshot before detection ─────────────────────────────
       // Snapshot the frame to canvas before running MediaPipe. This avoids
@@ -468,8 +576,7 @@ export function usePoseExtractor() {
     const vid = video      ?? scrubVideoRef.current
     if (!lm || !vid) return
 
-    vid.currentTime = timeS
-    await new Promise((r) => { vid.onseeked = r })
+    await seekToFrame(vid, timeS)
 
     // Use canvas snapshot for consistent detection, same as main processing loop
     const snapshot = snapshotVideoFrame(vid)
@@ -485,7 +592,7 @@ export function usePoseExtractor() {
   // ── Single image pose extraction ──────────────────────────────────────────
   // Also runs Gemini limb completion on the result for better accuracy.
   // Works for JPG, PNG, WebP, useful for pose reference images.
-  const processImage = useCallback(async (file) => {
+  const processImage = useCallback(async (file, settings = DEFAULT_SETTINGS) => {
     isCancelledRef.current = false
     setError(null)
     setFrames([])
@@ -493,9 +600,11 @@ export function usePoseExtractor() {
     setProgress(0)
     setClipName(null)
 
+    const modelQuality = settings.modelQuality ?? 'full'
+
     let landmarker
     try {
-      landmarker = await createLandmarker(1)
+      landmarker = await createLandmarker(1, modelQuality)
     } catch (e) {
       setError('Failed to load MediaPipe model.')
       setStatus('error')
@@ -518,7 +627,7 @@ export function usePoseExtractor() {
 
     const imageLandmarker = await PoseLandmarker.createFromOptions(
       visionRef.current, {
-        baseOptions: { modelAssetPath: MODEL_URL, delegate: 'GPU' },
+        baseOptions: { modelAssetPath: poseModelUrl(modelQuality), delegate: 'GPU' },
         runningMode: 'IMAGE',
         numPoses:    1,
         minPoseDetectionConfidence: 0.4,
@@ -639,13 +748,13 @@ export function usePoseExtractor() {
       scrubVideoRef.current = null
     }
 
-    const { captureFps, confidenceThreshold, keyframeThreshold, maxFrames } = settings
+    const { captureFps, confidenceThreshold, keyframeThreshold, maxFrames, modelQuality = 'full' } = settings
 
     let landmarker
     let handLandmarker
 
     try {
-      landmarker = await createLandmarker(1)
+      landmarker = await createLandmarker(1, modelQuality)
     } catch (e) {
       setError('Failed to load MediaPipe model. Check your internet connection.')
       setStatus('error')
@@ -716,8 +825,7 @@ export function usePoseExtractor() {
         return
       }
 
-      video.currentTime = t
-      await new Promise((r) => { video.onseeked = r })
+      await seekToFrame(video, t)
 
       // ── Canvas snapshot — the primary fix for video vs image accuracy gap ──
       // We snapshot the current video frame to an offscreen canvas before running
@@ -752,7 +860,7 @@ export function usePoseExtractor() {
               seedLocked = true
             } else {
               frameIndex++
-              setProgress(Math.round((frameIndex / totalFrames) * 100))
+              setProgress(Math.round((frameIndex / totalFrames) * 90))  // capture phase: 0-90% (dominates runtime)
               continue
             }
           }
@@ -848,7 +956,10 @@ export function usePoseExtractor() {
             _snapshotB64 = snapshot.toDataURL('image/jpeg', 0.6).split(',')[1]
           }
 
-          const filteredFrame = filterBankRef.current.filter({
+          // ── Pass 1 collects RAW frames ────────────────────────────────
+          // One Euro filtering is deferred to pass 2 (below) so it runs over the
+          // full, time-ordered series instead of inline on each surviving frame.
+          captured.push({
             frameIndex,
             timeMs: Math.round(t * 1000),
             landmarks,
@@ -860,12 +971,11 @@ export function usePoseExtractor() {
             handData,           // MediaPipe hand landmarks + computed finger angles
             _snapshotB64,       // Retained for clip naming only, not exported to BVH
           })
-          captured.push(filteredFrame)
         }
       }
 
       frameIndex++
-      setProgress(Math.round((frameIndex / totalFrames) * 100))
+      setProgress(Math.round((frameIndex / totalFrames) * 90))  // capture phase: 0-90% (dominates runtime)
       if (frameIndex % 10 === 0) await new Promise((r) => setTimeout(r, 0))
     }
 
@@ -880,8 +990,25 @@ export function usePoseExtractor() {
       handLandmarkerRef.current = null
     }
 
+    // ── Pass 2: temporal cleanup (70-90%) ──────────────────────────────
+    // First fill occluded joints by interpolating from neighbouring confident
+    // frames (on the post-Gemini landmarks), then run the One Euro filter. The
+    // filter is stateful and order-dependent, so it must see the full, now
+    // gap-free series in chronological order.
+    const gapFilled = temporalGapFill(captured, confidenceThreshold)
+    const cleaned = []
+    for (let i = 0; i < gapFilled.length; i++) {
+      if (isCancelledRef.current) return
+      cleaned.push(filterBankRef.current.filter(gapFilled[i]))
+      if (i % 50 === 0) {
+        setProgress(90 + Math.round((i / Math.max(1, gapFilled.length)) * 7))  // cleanup: 90-97%
+        await new Promise((r) => setTimeout(r, 0))
+      }
+    }
+    setProgress(97)
+
     const keyframes = []
-    for (const frame of captured) {
+    for (const frame of cleaned) {
       if (keyframes.length === 0) { keyframes.push(frame); continue }
       const prev = keyframes[keyframes.length - 1]
       if (poseDiff(frame.landmarks, prev.landmarks) >= keyframeThreshold) {
@@ -890,6 +1017,15 @@ export function usePoseExtractor() {
     }
 
     const finalFrames = subsampleFrames(keyframes, maxFrames)
+
+    // ── Robust bone lengths for the whole clip ─────────────────────────
+    // Computed from all confident cleaned frames (more samples than the final
+    // subsample) so exportBVH no longer caches limb lengths from a single,
+    // possibly-mangled first frame.
+    const boneLengths = computeMedianBoneLengths(cleaned, confidenceThreshold)
+    if (boneLengths) {
+      console.log('[BVH] Median bone lengths:', boneLengths)
+    }
 
     // ── Clip naming via Gemini ─────────────────────────────────────────
     // Samples the stored JPEG snapshots from the processed frames and asks
@@ -937,6 +1073,7 @@ export function usePoseExtractor() {
       gravityFrames,
       poseTypes,
       clipName:      resolvedClipName,
+      boneLengths,
     })
     setStatus('done')
     scrollToRef(statsSummaryRef)

@@ -79,7 +79,7 @@ export default function App() {
     if (file.type.startsWith('image/')) {
       setLastFile(file)
       fileRef.current = file
-      processImage(file)
+      processImage(file, settings)
       return
     }
 
@@ -276,6 +276,30 @@ export default function App() {
             </span>
           </div>
 
+          <div className="setting">
+            <div className="setting__header">
+              <span className="setting__label">Model quality</span>
+              <span className="setting__value">{settings.modelQuality}</span>
+            </div>
+            <select
+              disabled={isProcessing}
+              value={settings.modelQuality}
+              onChange={(e) => setSetting('modelQuality', e.target.value)}
+              style={{
+                width: '100%', padding: '6px 8px', background: '#1a1a2e',
+                color: '#fff', border: '1px solid #333', borderRadius: '4px',
+                fontFamily: 'monospace', fontSize: '12px', cursor: 'pointer',
+              }}
+            >
+              <option value="lite">Lite — fastest</option>
+              <option value="full">Full — balanced (default)</option>
+              <option value="heavy">Heavy — most accurate</option>
+            </select>
+            <span className="setting__hint">
+              Detection model — heavier models track harder poses more accurately but process slower
+            </span>
+          </div>
+
         </div>
       </div>
 
@@ -386,7 +410,11 @@ export default function App() {
             <div style={{ display: 'flex', gap: 8 }}>
               <button
                 className="btn bg-transparent border border-[#f5a623] rounded-[4px] px-3.5 py-1.5 text-[#f5a623] text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-[#f5a623]/10"
-                onClick={() => exportBVH(frames, stats.captureFps)}
+                onClick={() => exportBVH(frames, {
+                  captureFps:  stats.captureFps,
+                  clipName:    stats.clipName,
+                  boneLengths: stats.boneLengths,
+                })}
               >
                 ↓ Export BVH
               </button>
