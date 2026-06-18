@@ -265,8 +265,11 @@ function P(lms, worldLms, yawDeg, gravityAngleDeg = 0, geminiOrientation = null,
     if (len(rWrist) < 0.001) rWrist = add(rawRElbow, scale(pelvisFwd, cachedLengths.rFore));
   }
 
-  const isGrounded = geminiOrientation?.is_grounded ?? true;
-  const { lAnkle, rAnkle } = enforceFootFloor(lAnkleRaw, rAnkleRaw, isGrounded);
+  // Foot grounding is handled across the whole sequence in groundSkeleton()
+  // (buildMotion), not by the old per-frame monotonic floor clamp here — a single
+  // bad low frame used to drag the floor down for the rest of the clip.
+  const lAnkle = lAnkleRaw;
+  const rAnkle = rAnkleRaw;
 
   const lHeel = mp(lms, w, 29, yawDeg, gravityAngleDeg);
   const rHeel = mp(lms, w, 30, yawDeg, gravityAngleDeg);
@@ -693,6 +696,61 @@ function emitFingerRotations(fingerAngles, side) {
   return vals
 }
 
+// ── Contact-aware foot grounding ──────────────────────────────────────────────
+// Returns a per-frame vertical offset (added to the Hips Yposition channel) that
+// keeps the planted foot resting on a single, robust floor instead of letting the
+// whole figure bob — which is what made feet float and sink. Because it only
+// shifts the root translation, the leg poses (derived from world landmarks) are
+// untouched; the feet just stop drifting off the ground.
+//
+// Heights live in exportBVH's scaled space where LOWER physical position is MORE
+// NEGATIVE (mp() negates Y). Grounding only applies to upright, grounded frames —
+// lying/floor/airborne poses are left alone.
+function groundSkeleton(poses, boneLengths, captureFps) {
+  const N = poses.length
+  const offsets = new Array(N).fill(0)
+  if (N === 0) return offsets
+
+  // Leg length sets the spatial scale for the "near the floor" band.
+  const legLen = boneLengths
+    ? (((boneLengths.lThigh ?? 0) + (boneLengths.lShin ?? 0) + (boneLengths.rThigh ?? 0) + (boneLengths.rShin ?? 0)) / 2) || 100
+    : 100
+
+  const eligible = poses.map(({ gravityAngleDeg, isGrounded }) =>
+    isGrounded !== false && Math.abs(gravityAngleDeg) < 30)
+
+  const lY = poses.map((pose) => pose.p.leftFoot[1])
+  const rY = poses.map((pose) => pose.p.rightFoot[1])
+
+  // Floor = robust low percentile of pooled eligible foot heights (near the
+  // lowest the feet reach, ignoring a few outliers).
+  const pool = []
+  for (let i = 0; i < N; i++) if (eligible[i]) pool.push(lY[i], rY[i])
+  if (pool.length < 4) return offsets   // not enough standing data to ground safely
+  const sorted = [...pool].sort((a, b) => a - b)
+  const floorY = sorted[Math.floor(sorted.length * 0.10)]
+
+  const band = legLen * 0.18
+
+  const raw = new Array(N).fill(0)
+  for (let i = 0; i < N; i++) {
+    if (!eligible[i]) { raw[i] = 0; continue }
+    const lowest = Math.min(lY[i], rY[i])
+    // Plant the lower foot on the floor when it's near or below it; if both feet
+    // are clearly above the floor (airborne / sitting) leave the height alone.
+    raw[i] = lowest <= floorY + band ? floorY - lowest : 0
+  }
+
+  // Smooth so contact-foot handoffs don't pop the whole skeleton vertically.
+  const alpha = 0.25
+  let s = raw[0]
+  for (let i = 0; i < N; i++) {
+    s = alpha * raw[i] + (1 - alpha) * s
+    offsets[i] = Number.isFinite(s) ? s : 0
+  }
+  return offsets
+}
+
 function buildMotion(frames, frameTime, off, captureFps, boneLengths = null) {
   const lines = ['MOTION', `Frames: ${frames.length}`, `Frame Time: ${f(frameTime)}`]
   const DOWN = [0, -1, 0], FWD = [0, 0, 1]
@@ -707,8 +765,11 @@ function buildMotion(frames, frameTime, off, captureFps, boneLengths = null) {
 
   const orientEst = new OrientationEstimator({ captureFps })
 
+  // ── Pass 1: resolve world-space joint positions for every frame ─────────
+  // Foot grounding needs cross-frame information (floor level, which foot is
+  // planted), so poses are resolved first, then grounded, then emitted.
+  const poses = []
   for (const frame of frames) {
-    // ── Orientation estimation ─────────────────────────────────────────
     const enrichedFrame   = orientEst.process(frame)
     const { orientation } = enrichedFrame
     const yawDeg          = wrapYaw(orientation.yaw)
@@ -743,10 +804,22 @@ function buildMotion(frames, frameTime, off, captureFps, boneLengths = null) {
     const pelvisFwd    = norm(cross(hipRight, spineUpOrtho))
     const p            = correctRearView(pRaw, pelvisFwd)
 
+    const isGrounded = frame.geminiGravityOrientation?.is_grounded ?? true
+    poses.push({ frame, yawDeg, gravityAngleDeg, p, isGrounded })
+  }
+
+  // ── Pass 1.5: contact-aware foot grounding (vertical) ───────────────────
+  const rootYOffset = groundSkeleton(poses, boneLengths, captureFps)
+
+  // ── Pass 2: emit BVH channels ───────────────────────────────────────────
+  for (let fi = 0; fi < poses.length; fi++) {
+    const { frame, yawDeg, gravityAngleDeg, p } = poses[fi]
+    const deltaY = rootYOffset[fi]
+
     const vals = []
 
     // ── Hips ───────────────────────────────────────────────────────────
-    vals.push(...p.hips)
+    vals.push(p.hips[0], p.hips[1] + deltaY, p.hips[2])
     const spineDir = sub(p.spine, p.hips)
     const hipsRot  = quatFromTo(REST.spine, norm(spineDir))
     vals.push(...quatToZXY(hipsRot))

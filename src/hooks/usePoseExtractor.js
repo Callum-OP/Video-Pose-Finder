@@ -38,6 +38,7 @@ export const DEFAULT_SETTINGS = {
   keyframeThreshold:   0.04,  // Min accepted amount of joint movement (0–1 normalised) to keep a frame/pose.
   maxFrames:           200,   // The number of frames/poses to keep.
   modelQuality:        'full', // Pose model: 'lite' | 'full' | 'heavy' — higher = more accurate, slower.
+  trackHands:          true,   // Run the hand/finger pipeline. Off = faster (skips a per-frame model pass).
 }
 
 export const PERSON_COLORS = ['#7c6cff', '#39e8a0', '#f5a623', '#ff4d6d']
@@ -648,27 +649,31 @@ export function usePoseExtractor() {
       ? normaliseLandmarks(result.worldLandmarks[0])
       : null
 
-    // ── Run HandLandmarker on the image too ───────────────────────────────
-    let handData = null
-    try {
-      const imageHandLandmarker = await HandLandmarker.createFromOptions(
-        visionRef.current, {
-          baseOptions: { modelAssetPath: HAND_MODEL_URL, delegate: 'GPU' },
-          runningMode: 'IMAGE',
-          numHands:    2,
-          minHandDetectionConfidence: 0.5,
-          minHandPresenceConfidence:  0.5,
-        }
-      )
-      const handResult = imageHandLandmarker.detect(canvas)
-      imageHandLandmarker.close()
+    const trackHands = settings.trackHands ?? true
 
-      if (handResult.landmarks?.length > 0) {
-        handData = buildHandData(handResult)
-        console.log(`[HandLandmarker] Detected ${handResult.landmarks.length} hand(s) in image`)
+    // ── Run HandLandmarker on the image too (when hand tracking is on) ─────
+    let handData = null
+    if (trackHands) {
+      try {
+        const imageHandLandmarker = await HandLandmarker.createFromOptions(
+          visionRef.current, {
+            baseOptions: { modelAssetPath: HAND_MODEL_URL, delegate: 'GPU' },
+            runningMode: 'IMAGE',
+            numHands:    2,
+            minHandDetectionConfidence: 0.5,
+            minHandPresenceConfidence:  0.5,
+          }
+        )
+        const handResult = imageHandLandmarker.detect(canvas)
+        imageHandLandmarker.close()
+
+        if (handResult.landmarks?.length > 0) {
+          handData = buildHandData(handResult)
+          console.log(`[HandLandmarker] Detected ${handResult.landmarks.length} hand(s) in image`)
+        }
+      } catch (e) {
+        console.warn('[HandLandmarker] Failed on image, skipping finger data:', e)
       }
-    } catch (e) {
-      console.warn('[HandLandmarker] Failed on image, skipping finger data:', e)
     }
 
     const isLocalMode       = localStorage.getItem('use_local_backend') === 'true'
@@ -686,9 +691,10 @@ export function usePoseExtractor() {
       }
     }
 
-    // If MediaPipe hands didn't detect and backend is available, ask Gemini
+    // If hand tracking is on, MediaPipe hands didn't detect, and backend is
+    // available, ask Gemini for fingers.
     let geminiFingerPoses = null
-    if (!handData && !isLocalMode) {
+    if (trackHands && !handData && !isLocalMode) {
       const imageId = file.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()
       geminiFingerPoses = await getFingerPoses(canvas, imageId, 0)
     }
@@ -748,7 +754,7 @@ export function usePoseExtractor() {
       scrubVideoRef.current = null
     }
 
-    const { captureFps, confidenceThreshold, keyframeThreshold, maxFrames, modelQuality = 'full' } = settings
+    const { captureFps, confidenceThreshold, keyframeThreshold, maxFrames, modelQuality = 'full', trackHands = true } = settings
 
     let landmarker
     let handLandmarker
@@ -761,13 +767,19 @@ export function usePoseExtractor() {
       return
     }
 
-    // Load HandLandmarker alongside pose — failure is non-fatal, finger data becomes Gemini-only
-    try {
-      handLandmarker = await createHandLandmarker()
-      console.log('[HandLandmarker] Loaded successfully')
-    } catch (e) {
-      console.warn('[HandLandmarker] Failed to load, will use Gemini fallback for fingers:', e)
+    // Load HandLandmarker alongside pose — failure is non-fatal, finger data becomes Gemini-only.
+    // Skipped entirely when hand tracking is off, which removes a full model inference per frame.
+    if (trackHands) {
+      try {
+        handLandmarker = await createHandLandmarker()
+        console.log('[HandLandmarker] Loaded successfully')
+      } catch (e) {
+        console.warn('[HandLandmarker] Failed to load, will use Gemini fallback for fingers:', e)
+        handLandmarker = null
+      }
+    } else {
       handLandmarker = null
+      console.log('[HandLandmarker] Hand tracking disabled — skipping')
     }
 
     const video = document.createElement('video')
@@ -888,19 +900,21 @@ export function usePoseExtractor() {
             if (t - lastOrientationTime >= ORIENTATION_INTERVAL) {
               lastOrientationTime = t
 
-              // Run orientation, gravity, and hand poses in parallel for speed
+              // Run orientation, gravity, and (only when hand tracking is on) hand
+              // poses in parallel for speed.
               const [orientResult, gravityResult, handPoseResult] = await Promise.all([
                 getOrientation(video, videoId, frameIndex),
                 getGravityOrientation(video, videoId, frameIndex),
-                getHandPoses(video, videoId, frameIndex),
+                trackHands ? getHandPoses(video, videoId, frameIndex) : Promise.resolve(null),
               ])
 
               geminiOrientation         = orientResult
               currentGravityOrientation = gravityResult  // Persist across frames until next update
               geminiHandPoses           = handPoseResult
 
-              // Only ask Gemini for fingers if MediaPipe didn't detect hands this second
-              if (!handData) {
+              // Only ask Gemini for fingers if hand tracking is on and MediaPipe
+              // didn't detect hands this second.
+              if (trackHands && !handData) {
                 geminiFingerPoses = await getFingerPoses(video, videoId, frameIndex)
                 if (geminiFingerPoses) {
                   console.log(`[Gemini] Finger fallback used at t=${t.toFixed(2)}s`)

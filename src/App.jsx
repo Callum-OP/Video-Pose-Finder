@@ -205,11 +205,39 @@ export default function App() {
               Bypasses remote server APIs entirely. This is only relevant if you have connected to a backend.
             </span>
           </div>
-          <input 
-            type="checkbox" 
+          <input
+            type="checkbox"
             checked={useLocalBackend}
             disabled={isProcessing}
             onChange={handleLocalBackendToggle}
+            style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+          />
+        </div>
+
+        {/* Hand / finger tracking toggle */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '12px',
+          background: '#1a1a2e',
+          border: '1px solid #333',
+          borderRadius: '6px',
+          marginBottom: '20px'
+        }}>
+          <div>
+            <span style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', color: '#fff' }}>
+              Track hands &amp; fingers
+            </span>
+            <span style={{ fontSize: '11px', color: '#888' }}>
+              Adds finger poses to the skeleton. Turn off to process faster — it skips a model pass on every frame.
+            </span>
+          </div>
+          <input
+            type="checkbox"
+            checked={settings.trackHands}
+            disabled={isProcessing}
+            onChange={(e) => setSetting('trackHands', e.target.checked)}
             style={{ width: '18px', height: '18px', cursor: 'pointer' }}
           />
         </div>
