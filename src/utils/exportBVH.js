@@ -233,6 +233,7 @@ function P(lms, worldLms, yawDeg, gravityAngleDeg = 0, geminiOrientation = null,
   const leftEar = mp(lms, w, 7, yawDeg, gravityAngleDeg);
   const rightEar = mp(lms, w, 8, yawDeg, gravityAngleDeg);
   const earMid = avg(leftEar, rightEar);
+  const nose = mp(lms, w, 0, yawDeg, gravityAngleDeg);   // for head orientation
 
   const hipRight = norm(sub(rightHip, leftHip));
   const spineUp = norm(sub(avg(leftSho, rightSho), avg(leftHip, rightHip)));
@@ -326,6 +327,7 @@ function P(lms, worldLms, yawDeg, gravityAngleDeg = 0, geminiOrientation = null,
     hips, spine, spine1, spine2,
     neck: avg(shoulders, earMid),
     head: earMid,
+    nose, leftEar, rightEar,   // face points for head orientation
     leftShoulder: leftSho,
     leftArm: leftSho,
     leftForeArm: leftElbow,
@@ -389,6 +391,31 @@ function quatToZXY([w, x, y, z]) {
   const rz = Math.atan2(-m[1], m[4]);
   const deg = r => r * (180 / Math.PI);
   return [deg(rz), deg(rx), deg(ry)];
+}
+
+// Rotation matrix (given its right/up/fwd column axes) → quaternion. Inverse of
+// the quat→matrix layout used by quatToZXY, so the two round-trip consistently.
+function matToQuat(r, u, f) {
+  const m00 = r[0], m10 = r[1], m20 = r[2];
+  const m01 = u[0], m11 = u[1], m21 = u[2];
+  const m02 = f[0], m12 = f[1], m22 = f[2];
+  const tr = m00 + m11 + m22;
+  let w, x, y, z;
+  if (tr > 0) {
+    const s = Math.sqrt(tr + 1) * 2;
+    w = s / 4; x = (m21 - m12) / s; y = (m02 - m20) / s; z = (m10 - m01) / s;
+  } else if (m00 > m11 && m00 > m22) {
+    const s = Math.sqrt(1 + m00 - m11 - m22) * 2;
+    w = (m21 - m12) / s; x = s / 4; y = (m01 + m10) / s; z = (m02 + m20) / s;
+  } else if (m11 > m22) {
+    const s = Math.sqrt(1 + m11 - m00 - m22) * 2;
+    w = (m02 - m20) / s; x = (m01 + m10) / s; y = s / 4; z = (m12 + m21) / s;
+  } else {
+    const s = Math.sqrt(1 + m22 - m00 - m11) * 2;
+    w = (m10 - m01) / s; x = (m02 + m20) / s; y = (m12 + m21) / s; z = s / 4;
+  }
+  const n = Math.sqrt(w * w + x * x + y * y + z * z) || 1;
+  return [w / n, x / n, y / n, z / n];
 }
 
 export { P, getWristFlex, wristRotationDeg, resolveFingerAngles, resetBoneLengthCache, resetFootFloor };
@@ -622,6 +649,10 @@ function correctRearView(p, pelvisFwd) {
     spine2:        mx(p.spine2),
     neck:          mx(p.neck),
     head:          mx(p.head),
+    // Mirror + swap the face points so the head frame stays consistent for rear views
+    nose:          mx(p.nose),
+    leftEar:       mx(p.rightEar),
+    rightEar:      mx(p.leftEar),
     leftShoulder:  mx(p.rightShoulder),
     leftArm:       mx(p.rightArm),
     leftForeArm:   mx(p.rightForeArm),
@@ -694,6 +725,40 @@ function emitFingerRotations(fingerAngles, side) {
   vals.push(0, bend(pinky?.dip) * sign, 0)
 
   return vals
+}
+
+// ── Head orientation ──────────────────────────────────────────────────────────
+// Calibration: the face-forward axis is derived from the nose, which sits below
+// the ear line, so a neutral head reads as looking slightly down. Lift the head
+// pitch by this many degrees to bring a neutral gaze level. Tune (or flip sign)
+// if heads end up looking too far up/down.
+const HEAD_PITCH_OFFSET_DEG = 12
+
+// Build an orthonormal head frame {right, up, fwd} in skeleton space from the
+// ears, nose, and the neck->head direction. Up is anchored to the reliable
+// neck->head vector and forward to the nose, with right derived — this gives a
+// consistent right-handed frame with no sign ambiguity. Returns null when the
+// face points are missing/degenerate (caller then leaves the head un-rotated).
+function headFrame(p) {
+  const lEar = p.leftEar, rEar = p.rightEar, nose = p.nose
+  if (!lEar || !rEar || !nose) return null
+  const earMid = avg(lEar, rEar)
+  if (len(sub(rEar, lEar)) < 1e-3) return null
+
+  const upApprox = norm(sub(p.head, p.neck))
+  const fwdRef   = sub(nose, earMid)
+  let fwd = sub(fwdRef, scale(upApprox, dot(fwdRef, upApprox)))   // remove up-component
+  if (len(fwd) < 1e-3 || len(upApprox) < 1e-3) return null
+  fwd = norm(fwd)
+  const right = norm(cross(upApprox, fwd))   // right = up × fwd
+  let up      = norm(cross(fwd, right))      // up = fwd × right (re-orthogonalised)
+
+  if (HEAD_PITCH_OFFSET_DEG) {
+    const a = HEAD_PITCH_OFFSET_DEG * Math.PI / 180
+    fwd = norm(rotateAround(fwd, right, a))
+    up  = norm(rotateAround(up, right, a))
+  }
+  return { right, up, fwd }
 }
 
 // ── Contact-aware foot grounding ──────────────────────────────────────────────
@@ -861,7 +926,21 @@ function buildMotion(frames, frameTime, off, captureFps, boneLengths = null) {
     const neckLocal = quatMul(quatConj(neckWorld), quatMul(neckRot, neckWorld))
     vals.push(...quatToZXY(neckLocal))
     const spineWorld2 = neckWorld
-    vals.push(0, 0, 0)
+
+    // ── Head ───────────────────────────────────────────────────────────
+    // Drive the head with a full 3-DOF orientation from the face landmarks
+    // (was identity before, so the head just followed the neck → looked coarse
+    // and tended to point down). headLocal is the head's orientation relative to
+    // the Neck joint's world frame.
+    const hf = headFrame(p)
+    if (hf) {
+      const neckJointWorld = quatMul(neckWorld, neckLocal)
+      const headWorld      = matToQuat(hf.right, hf.up, hf.fwd)
+      const headLocal      = quatMul(quatConj(neckJointWorld), headWorld)
+      vals.push(...quatToZXY(headLocal))
+    } else {
+      vals.push(0, 0, 0)
+    }
 
     // ── Left arm ───────────────────────────────────────────────────────
     const lShoDir   = sub(p.leftShoulder, p.spine2)

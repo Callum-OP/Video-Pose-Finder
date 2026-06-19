@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from 'react'
+import { useRef, useState, useCallback, useEffect } from 'react'
 import { PoseLandmarker, HandLandmarker, FilesetResolver } from '@mediapipe/tasks-vision'
 import { LandmarkFilterBank } from '../utils/oneEuroFilter'
 import { temporalGapFill } from '../utils/poseCleanup'
@@ -317,6 +317,15 @@ export function usePoseExtractor() {
   const isCancelledRef    = useRef(false)
   const filterBankRef     = useRef(null)
 
+  // ── Screen wake lock ───────────────────────────────────────────────────────
+  // Long runs (especially the heavy model) can take many minutes, during which
+  // the laptop may auto-sleep and wipe all in-memory progress. We hold a screen
+  // wake lock while processing to keep the machine awake. wantWakeLockRef tracks
+  // whether we *should* be holding it, so we can re-acquire after the OS releases
+  // it on tab switches.
+  const wakeLockRef     = useRef(null)
+  const wantWakeLockRef = useRef(false)
+
   // ── Monotonic timestamp counter ───────────────────────────────────────────
   // This is the primary fix for why video is less accurate than images.
   // MediaPipe's VIDEO mode requires strictly increasing timestamps. When seeking
@@ -352,8 +361,38 @@ export function usePoseExtractor() {
     }, 150)
   }
 
+  const acquireWakeLock = useCallback(async () => {
+    wantWakeLockRef.current = true
+    try {
+      if ('wakeLock' in navigator) {
+        wakeLockRef.current = await navigator.wakeLock.request('screen')
+      }
+    } catch {
+      // Wake lock can be rejected (e.g. low battery) — non-fatal, processing continues.
+    }
+  }, [])
+
+  const releaseWakeLock = useCallback(() => {
+    wantWakeLockRef.current = false
+    try { wakeLockRef.current?.release?.() } catch { /* already released */ }
+    wakeLockRef.current = null
+  }, [])
+
+  // The OS releases the wake lock when the tab is hidden; re-acquire it when the
+  // tab becomes visible again if we still want it (i.e. still processing).
+  useEffect(() => {
+    const onVisible = () => {
+      if (wantWakeLockRef.current && document.visibilityState === 'visible' && !wakeLockRef.current) {
+        acquireWakeLock()
+      }
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [acquireWakeLock])
+
   const cancelProcessing = useCallback(() => {
     isCancelledRef.current = true
+    releaseWakeLock()
     setError(null)
     setFrames([])
     setStats(null)
@@ -368,7 +407,7 @@ export function usePoseExtractor() {
       scrubVideoRef.current = null
     }
     setStatus('idle')
-  }, [])
+  }, [releaseWakeLock])
 
   async function createLandmarker(numPoses, modelQuality = 'full') {
     if (!visionRef.current) {
@@ -742,6 +781,7 @@ export function usePoseExtractor() {
     if (!file) return
 
     isCancelledRef.current = false
+    acquireWakeLock()   // keep the machine awake for the whole (possibly long) run
     setError(null)
     setFrames([])
     setStats(null)
@@ -762,6 +802,7 @@ export function usePoseExtractor() {
     try {
       landmarker = await createLandmarker(1, modelQuality)
     } catch (e) {
+      releaseWakeLock()
       setError('Failed to load MediaPipe model. Check your internet connection.')
       setStatus('error')
       return
@@ -834,6 +875,7 @@ export function usePoseExtractor() {
       // Exit if user cancels
       if (isCancelledRef.current) {
         URL.revokeObjectURL(video.src)
+        releaseWakeLock()
         return
       }
 
@@ -994,7 +1036,7 @@ export function usePoseExtractor() {
     }
 
     // Exit if user cancels
-    if (isCancelledRef.current) return
+    if (isCancelledRef.current) { releaseWakeLock(); return }
 
     URL.revokeObjectURL(video.src)
 
@@ -1012,7 +1054,7 @@ export function usePoseExtractor() {
     const gapFilled = temporalGapFill(captured, confidenceThreshold)
     const cleaned = []
     for (let i = 0; i < gapFilled.length; i++) {
-      if (isCancelledRef.current) return
+      if (isCancelledRef.current) { releaseWakeLock(); return }
       cleaned.push(filterBankRef.current.filter(gapFilled[i]))
       if (i % 50 === 0) {
         setProgress(90 + Math.round((i / Math.max(1, gapFilled.length)) * 7))  // cleanup: 90-97%
@@ -1089,6 +1131,7 @@ export function usePoseExtractor() {
       clipName:      resolvedClipName,
       boneLengths,
     })
+    releaseWakeLock()
     setStatus('done')
     scrollToRef(statsSummaryRef)
 
@@ -1110,7 +1153,7 @@ export function usePoseExtractor() {
     } else {
       console.log('[Pipeline] Local Mode Active: Skipping MongoDB cloud save session synchronization.')
     }
-  }, [])
+  }, [acquireWakeLock, releaseWakeLock])
 
   return {
     loadVideo,
