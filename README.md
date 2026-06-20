@@ -12,8 +12,7 @@ Then to run use: npm run dev
 
 It should be accessible locally on http://localhost:5173/
 
-
-For the backend integration I use a python backend on Google Cloud and Gemini Flash 2.5 Agent to improve the accuracy of the app.
+Everything runs locally in the browser using MediaPipe — there is no backend to set up.
 
 
 # Limitations
@@ -21,25 +20,19 @@ Trying to track several people at the same time is unreliable, so this app can o
 
 
 # Issues
-Feet are not planted on the ground properly since implementing Gemini Agent and backend.
+Feet are not always planted firmly on the ground.
 
 The first frame of the pose sequence appears mangled and incorrect (but only if its a video).
 
 
 # Features To Consider
-Add a toggle to enable/disable hand poses?
-
 Have a scroller to choose when the animation they want starts and ends.
 
 Allow gifs to be imported? Although might not be worth the memory and code required to convert it.
-
-Have Gemini be more involved in identifying and correctly tracking several people at least for the initial first frame?
 
 Could have an advanced option that lets the user move or place the skeleton where it should be if that helps the program that tracks it know where to start.
 
 Add warning message when failed to detect multiple people.
 
-Could also use Gemini AI to tidy up the pose data, filling in missing limbs, fixing inaccuracies and other tasks to ensure that the final pose sequence is complete and usable.
-
-Save pose sequences? Then the user can access them whenever they want. Would also be useful to save settings. Could just save them to local storage or use something like MongoDB.
+Save pose sequences? Then the user can access them whenever they want. Would also be useful to save settings. Could just save them to local storage.
 

@@ -3,8 +3,7 @@ import { OrientationEstimator } from './orientationEstimator.js';
 // ── BVH Exporter ─────────────────────────────────────────────────────────────
 // Converts MediaPipe pose landmark frames to a BVH animation file.
 // Matches Mixamo/Blender BVH export convention exactly.
-// Includes full finger hierarchy driven by MediaPipe HandLandmarker data,
-// with Gemini Vision as a fallback when hands are not detected.
+// Includes full finger hierarchy driven by MediaPipe HandLandmarker data.
 
 const SCALE = 100;
 
@@ -26,13 +25,6 @@ function rotateAround(vec, ax, rad) {
   const c = Math.cos(rad);
   const s = Math.sin(rad);
   return add(add(scale(vec, c), scale(cross(ax, vec), s)), scale(ax, dot(ax, vec) * (1 - c)));
-}
-
-// ── Map Gemini's wrist_rotation string to a BVH Y-rotation degree ─────────────
-function wristRotationDeg(rotation, side) {
-  const map = { supinated: 60, neutral: 0, pronated: -60 };
-  const deg = map[rotation] ?? 0;
-  return side === 'right' ? -deg : deg;
 }
 
 // ── Wrist flex from HandLandmarker palm direction ─────────────────────────────
@@ -68,16 +60,9 @@ function getWristFlex(frame, side, forearmDir, yawDeg = 0) {
   return Math.max(-70, Math.min(70, flexDeg));
 }
 
-// ── Get finger angles for a hand, preferring MediaPipe then Gemini ────────────
+// ── Get finger angles for a hand from MediaPipe HandLandmarker data ───────────
 function resolveFingerAngles(frame, side) {
-  if (frame.handData?.[side]?.fingerAngles) {
-    return frame.handData[side].fingerAngles;
-  }
-  if (frame.geminiFingerPoses?.hands) {
-    const hand = frame.geminiFingerPoses.hands.find(h => h.side === side && h.confidence > 0.4);
-    if (hand?.fingers) return hand.fingers;
-  }
-  return null;
+  return frame.handData?.[side]?.fingerAngles ?? null;
 }
 
 // ── Pre-rotation functions ────────────────────────────────────────────────────
@@ -218,7 +203,7 @@ function constrainElbow(shoulder, rawElbow, wrist, boneLenUpper, boneLenFore) {
 }
 
 // ── Extract and constrain all joint positions from a frame ────────────────────
-function P(lms, worldLms, yawDeg, gravityAngleDeg = 0, geminiOrientation = null, geminiHandPoses = null, boneLengths = null) {
+function P(lms, worldLms, yawDeg, gravityAngleDeg = 0, boneLengths = null) {
   const w = worldLms;
 
   const leftHip = mp(lms, w, 23, yawDeg, gravityAngleDeg);
@@ -293,13 +278,7 @@ function P(lms, worldLms, yawDeg, gravityAngleDeg = 0, geminiOrientation = null,
   const rightElbow = constrainElbow(rightSho, rawRElbow, rWrist, bl.rUpper, bl.rFore);
 
   const shoulderWidth = len(sub(rightSho, leftSho));
-  let minHandSep = shoulderWidth * 0.18;
-
-  const handPoses = geminiHandPoses?.hands ?? [];
-  const handsClose = handPoses.some(h => ['fist', 'clasp', 'other'].includes(h.pose) && h.confidence > 0.5);
-  if (handsClose) {
-    minHandSep = shoulderWidth * 0.04;
-  }
+  const minHandSep = shoulderWidth * 0.18;
 
   const wristVec = sub(rWrist, lWrist);
   const wristDist = len(wristVec);
@@ -418,7 +397,7 @@ function matToQuat(r, u, f) {
   return [w / n, x / n, y / n, z / n];
 }
 
-export { P, getWristFlex, wristRotationDeg, resolveFingerAngles, resetBoneLengthCache, resetFootFloor };
+export { P, getWristFlex, resolveFingerAngles, resetBoneLengthCache, resetFootFloor };
 
 
 // ── Rest offsets ──────────────────────────────────────────────────────────────
@@ -635,7 +614,7 @@ ${t(1)}}
 
 // ── Rear-view correction ──────────────────────────────────────────────────────
 // When the camera is behind the subject, MediaPipe's x coordinates are mirrored and left/right joints are swapped from the body's perspective.
-// With yaw pre-rotation active, this only fires for true rear-facing views where pelvisFwd[2] < 0 after rotation — i.e. Gemini yaw is near ±180°.
+// With yaw pre-rotation active, this only fires for true rear-facing views where pelvisFwd[2] < 0 after rotation — i.e. the estimated yaw is near ±180°.
 function correctRearView(p, pelvisFwd) {
   if (pelvisFwd[2] >= 0) return p // Front-facing after rotation, no correction needed
 
@@ -728,18 +707,33 @@ function emitFingerRotations(fingerAngles, side) {
 }
 
 // ── Head orientation ──────────────────────────────────────────────────────────
-// Calibration: the face-forward axis is derived from the nose, which sits below
-// the ear line, so a neutral head reads as looking slightly down. Lift the head
-// pitch by this many degrees to bring a neutral gaze level. Tune (or flip sign)
-// if heads end up looking too far up/down.
-const HEAD_PITCH_OFFSET_DEG = 12
+// Head calibration: the face-forward axis is derived from the nose. The pitch
+// offset rotates the gaze around the head's `right` axis.
+//
+// SIGN: in this skeleton's space (up=+Y, fwd=+Z, right=+X) a POSITIVE offset
+// tilts the gaze DOWN (toward −Y); a NEGATIVE offset lifts it UP. lite/full read
+// as looking slightly up, so a small positive value brings them level. The heavy
+// model tracks the face lower/more-forward, so its neutral gaze reads pointing at
+// the floor — it needs a NEGATIVE offset to lift the head back up. Tune per model:
+// make heavy MORE negative if the head still faces the floor, LESS negative (toward
+// 0) if it tips too far back.
+const HEAD_PITCH_OFFSET_BY_MODEL = { lite: 12, full: 12, heavy: -22 }
+const headPitchOffsetFor = (modelQuality) => HEAD_PITCH_OFFSET_BY_MODEL[modelQuality] ?? 12
+
+// Neck calibration: heavier models track the head's true (forward-of-shoulders)
+// position more accurately, which can render the neck bone slouched forward and
+// drag the head down. This factor pulls the neck bone back toward the torso's up
+// direction (0 = no change, so lite/full are untouched). Tune per model — raise
+// heavy if the neck still slumps toward the floor.
+const NECK_STRAIGHTEN_BY_MODEL = { lite: 0, full: 0, heavy: 0.7 }
+const neckStraightenFor = (modelQuality) => NECK_STRAIGHTEN_BY_MODEL[modelQuality] ?? 0
 
 // Build an orthonormal head frame {right, up, fwd} in skeleton space from the
 // ears, nose, and the neck->head direction. Up is anchored to the reliable
 // neck->head vector and forward to the nose, with right derived — this gives a
 // consistent right-handed frame with no sign ambiguity. Returns null when the
 // face points are missing/degenerate (caller then leaves the head un-rotated).
-function headFrame(p) {
+function headFrame(p, pitchOffsetDeg = 12) {
   const lEar = p.leftEar, rEar = p.rightEar, nose = p.nose
   if (!lEar || !rEar || !nose) return null
   const earMid = avg(lEar, rEar)
@@ -753,8 +747,8 @@ function headFrame(p) {
   const right = norm(cross(upApprox, fwd))   // right = up × fwd
   let up      = norm(cross(fwd, right))      // up = fwd × right (re-orthogonalised)
 
-  if (HEAD_PITCH_OFFSET_DEG) {
-    const a = HEAD_PITCH_OFFSET_DEG * Math.PI / 180
+  if (pitchOffsetDeg) {
+    const a = pitchOffsetDeg * Math.PI / 180
     fwd = norm(rotateAround(fwd, right, a))
     up  = norm(rotateAround(up, right, a))
   }
@@ -816,7 +810,9 @@ function groundSkeleton(poses, boneLengths, captureFps) {
   return offsets
 }
 
-function buildMotion(frames, frameTime, off, captureFps, boneLengths = null) {
+function buildMotion(frames, frameTime, off, captureFps, boneLengths = null, modelQuality = 'full') {
+  const neckStraighten  = neckStraightenFor(modelQuality)
+  const headPitchOffset = headPitchOffsetFor(modelQuality)
   const lines = ['MOTION', `Frames: ${frames.length}`, `Frame Time: ${f(frameTime)}`]
   const DOWN = [0, -1, 0], FWD = [0, 0, 1]
   const REST = {
@@ -842,22 +838,16 @@ function buildMotion(frames, frameTime, off, captureFps, boneLengths = null) {
     if (orientation.shotCut) {
       console.log(`[BVH] Shot cut at frame ${frame.frameIndex}, yaw snapped to ${yawDeg.toFixed(1)}°`)
     }
-    if (orientation.source === 'gemini') {
-      console.log(`[BVH] Gemini orientation: ${orientation.view} (${yawDeg.toFixed(1)}°)`)
-    }
 
-    const gravityData    = frame.geminiGravityOrientation
-    const gravityAngleDeg = (gravityData?.confidence > 0.6 && gravityData?.gravity_angle !== undefined)
-      ? gravityData.gravity_angle
-      : 0
+    // Gravity tilt is unused now that the Gemini gravity oracle is gone; the
+    // geometric pipeline assumes an upright, grounded skeleton.
+    const gravityAngleDeg = 0
 
     const pRaw = P(
       frame.landmarks,
       frame.worldLandmarks,
       yawDeg,
       gravityAngleDeg,
-      frame.geminiGravityOrientation,
-      frame.geminiHandPoses,
       boneLengths
     )
 
@@ -869,8 +859,7 @@ function buildMotion(frames, frameTime, off, captureFps, boneLengths = null) {
     const pelvisFwd    = norm(cross(hipRight, spineUpOrtho))
     const p            = correctRearView(pRaw, pelvisFwd)
 
-    const isGrounded = frame.geminiGravityOrientation?.is_grounded ?? true
-    poses.push({ frame, yawDeg, gravityAngleDeg, p, isGrounded })
+    poses.push({ frame, yawDeg, gravityAngleDeg, p, isGrounded: true })
   }
 
   // ── Pass 1.5: contact-aware foot grounding (vertical) ───────────────────
@@ -920,7 +909,13 @@ function buildMotion(frames, frameTime, off, captureFps, boneLengths = null) {
     const spine2Local     = quatMul(quatConj(spineWorld2Base), quatMul(spine2WithTwist, spineWorld2Base))
     vals.push(...quatToZXY(spine2Local))
 
-    const neckDir   = sub(p.head, p.neck)
+    // Straighten a forward-slouched neck by pulling its direction toward the
+    // torso's up axis (per-model factor; 0 leaves lite/full unchanged).
+    const neckDirRaw = sub(p.head, p.neck)
+    const torsoUp    = norm(sub(p.spine2, p.hips))
+    const neckDir    = neckStraighten
+      ? norm(add(neckDirRaw, scale(torsoUp, neckStraighten * len(neckDirRaw))))
+      : neckDirRaw
     const neckWorld = quatMul(spineWorld2Base, spine2Local)
     const neckRot   = quatFromTo(quatRotate(neckWorld, REST.head), norm(neckDir))
     const neckLocal = quatMul(quatConj(neckWorld), quatMul(neckRot, neckWorld))
@@ -932,7 +927,7 @@ function buildMotion(frames, frameTime, off, captureFps, boneLengths = null) {
     // (was identity before, so the head just followed the neck → looked coarse
     // and tended to point down). headLocal is the head's orientation relative to
     // the Neck joint's world frame.
-    const hf = headFrame(p)
+    const hf = headFrame(p, headPitchOffset)
     if (hf) {
       const neckJointWorld = quatMul(neckWorld, neckLocal)
       const headWorld      = matToQuat(hf.right, hf.up, hf.fwd)
@@ -961,12 +956,10 @@ function buildMotion(frames, frameTime, off, captureFps, boneLengths = null) {
     vals.push(...quatToZXY(lFALocal))
 
     // ── Left Hand (Fixed Orientation Offset) ───────────────────────────
-    const lHandGemini = frame.geminiHandPoses?.hands?.find(h => h.side === 'left' && h.confidence > 0.5)
-    const lWristRot   = lHandGemini ? wristRotationDeg(lHandGemini.wrist_rotation, 'left') : 0
     const lWristFlex  = getWristFlex(frame, 'left', lFADir, yawDeg)
-    
+
     // Counteract the 90-degree twist caused by finger tracking Z-forward offsets
-    vals.push(lWristRot, lWristFlex, -90) 
+    vals.push(0, lWristFlex, -90)
 
     const lFingerAngles = resolveFingerAngles(frame, 'left')
     vals.push(...emitFingerRotations(lFingerAngles, 'left'))
@@ -990,12 +983,10 @@ function buildMotion(frames, frameTime, off, captureFps, boneLengths = null) {
     vals.push(...quatToZXY(rFALocal))
 
     // ── Right Hand (Fixed Orientation Offset) ──────────────────────────
-    const rHandGemini = frame.geminiHandPoses?.hands?.find(h => h.side === 'right' && h.confidence > 0.5)
-    const rWristRot   = rHandGemini ? wristRotationDeg(rHandGemini.wrist_rotation, 'right') : 0
     const rWristFlex  = getWristFlex(frame, 'right', rFADir, yawDeg)
-    
+
     // Balance right hand coordinate frame projection parity
-    vals.push(rWristRot, rWristFlex, 90) 
+    vals.push(0, rWristFlex, 90)
 
     const rFingerAngles = resolveFingerAngles(frame, 'right')
     vals.push(...emitFingerRotations(rFingerAngles, 'right'))
@@ -1051,15 +1042,15 @@ function buildMotion(frames, frameTime, off, captureFps, boneLengths = null) {
 }
 
 // ── Public ────────────────────────────────────────────────────────────────────
-// clipName: optional snake_case string from Gemini's /name-clip endpoint.
-// If provided, the downloaded file is named after the detected activity instead of "pose_sequence".
-export function exportBVH(frames, { captureFps = 30, clipName = null, boneLengths = null } = {}) {
+// clipName: optional snake_case filename (without extension). If provided, the
+// downloaded file is named after it instead of the default "pose_sequence".
+export function exportBVH(frames, { captureFps = 30, clipName = null, boneLengths = null, modelQuality = 'full' } = {}) {
   if (!frames?.length) return
   console.log(`[BVH] Exporting ${frames.length} frames at ${captureFps} FPS`)
   resetBoneLengthCache()
   resetFootFloor()
   const off      = getRestOffsets()
-  const bvh      = buildHierarchy(off) + '\n' + buildMotion(frames, 1 / captureFps, off, captureFps, boneLengths)
+  const bvh      = buildHierarchy(off) + '\n' + buildMotion(frames, 1 / captureFps, off, captureFps, boneLengths, modelQuality)
   const blob     = new Blob([bvh], { type: 'text/plain' })
   const url      = URL.createObjectURL(blob)
   const a        = document.createElement('a')
@@ -1070,16 +1061,13 @@ export function exportBVH(frames, { captureFps = 30, clipName = null, boneLength
 }
 
 // ── Single-image export ────────────────────────────────────────────────────────
-export function exportSingleImageBVH(landmark, worldLandmark, geminiOrientation, captureFps = 30, handData = null, geminiFingerPoses = null) {
+export function exportSingleImageBVH(landmark, worldLandmark, captureFps = 30, handData = null) {
   if (!landmark) return
   const frame = {
-    frameIndex:        0,
-    landmarks:         landmark,
-    worldLandmarks:    worldLandmark,
-    geminiOrientation: geminiOrientation,
-    handData:          handData,
-    geminiFingerPoses: geminiFingerPoses,
+    frameIndex:     0,
+    landmarks:      landmark,
+    worldLandmarks: worldLandmark,
+    handData:       handData,
   }
-  console.log(`[BVH] Exporting single image with orientation:`, geminiOrientation)
   exportBVH([frame], { captureFps })
 }

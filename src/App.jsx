@@ -6,13 +6,13 @@ import { exportBVH } from './utils/exportBVH'
 import './App.css'
 
 const STATUS_COLOR = {
-  idle:            '#4a4a6a',
+  idle:            '#5b5b78',
   'loading-model': '#f5a623',
   prescanning:     '#f5a623',
   'select-person': '#f5a623',
-  processing:      '#6366f1',
-  done:            '#22c55e',
-  error:           '#ef4444',
+  processing:      '#7c6cff',
+  done:            '#39e8a0',
+  error:           '#ff5d73',
 }
 
 const STATUS_LABEL = {
@@ -25,8 +25,6 @@ const STATUS_LABEL = {
   error:           '✕ Error',
 }
 
-const backendUrl = import.meta.env.VITE_BACKEND_URL
-
 function StatBox({ label, value, unit }) {
   return (
     <div className="stat-box">
@@ -36,6 +34,15 @@ function StatBox({ label, value, unit }) {
         {unit && <span className="stat-box__unit">{unit}</span>}
       </div>
     </div>
+  )
+}
+
+function Switch({ checked, disabled, onChange }) {
+  return (
+    <label className="switch">
+      <input type="checkbox" checked={checked} disabled={disabled} onChange={onChange} />
+      <span className="switch__slider" />
+    </label>
   )
 }
 
@@ -52,11 +59,6 @@ export default function App() {
   const [settings, setSettings] = useState(DEFAULT_SETTINGS)
   const [lastFile, setLastFile] = useState(null)
   const [showModal, setShowModal] = useState(false)
-  
-  // Track local mode status via state from localStorage
-  const [useLocalBackend, setUseLocalBackend] = useState(
-    () => localStorage.getItem('use_local_backend') === 'true'
-  )
 
   const pendingFileRef = useRef(null)
   const inputRef = useRef(null)
@@ -65,17 +67,10 @@ export default function App() {
     setSettings((prev) => ({ ...prev, [key]: value }))
   }
 
-  // Handle setting updates for the local fallback toggle
-  function handleLocalBackendToggle(e) {
-    const checked = e.target.checked
-    setUseLocalBackend(checked)
-    localStorage.setItem('use_local_backend', checked)
-  }
-
   function handleFile(file) {
     if (!file) return
-    
-    // Image, skip the modal, go straight to single-frame extraction
+
+    // Image: skip the modal, go straight to single-frame extraction.
     if (file.type.startsWith('image/')) {
       setLastFile(file)
       fileRef.current = file
@@ -110,7 +105,7 @@ export default function App() {
     handleFile(e.dataTransfer.files[0])
   }
 
-  // Called by PersonSelector when user clicks a skeleton
+  // Called by PersonSelector when the user clicks a skeleton.
   function handlePersonSelected(seed) {
     processVideo(seed, settings)
   }
@@ -140,10 +135,11 @@ export default function App() {
       {/* Header */}
       <div className="header">
         <div className="header__title-row">
+          <span className="header__mark">⛷</span>
           <h1 className="header__title">PoseFinder</h1>
         </div>
         <p className="header__desc">
-          Upload a video and get pose data now.
+          Upload a video or image and turn it into ready-to-use pose animation data.
         </p>
       </div>
 
@@ -153,249 +149,190 @@ export default function App() {
           {STATUS_LABEL[status]}
         </span>
         {isProcessing && (
-          <div className="status-bar__track">
-            <div className="status-bar__fill" style={{ width: `${progress}%` }} />
-          </div>
-        )}
-        {isProcessing && (
-          <span className="status-bar__pct">{progress}%</span>
+          <>
+            <div className="status-bar__track">
+              <div className="status-bar__fill" style={{ width: `${progress}%` }} />
+            </div>
+            <span className="status-bar__pct">{progress}%</span>
+          </>
         )}
       </div>
 
-      {/* System Engine Status Notifications */}
-      {backendUrl && !useLocalBackend && (
-        <div className="text-xs font-mono text-center mb-4" style={{ color: '#39e8a0' }}>
-          ✓ AI backend active <br></br><br></br>
-        </div>
-      )}
-      {(useLocalBackend || !backendUrl) && (
-        <div className="text-xs font-mono text-center mb-4" style={{ color: '#f5a623' }}>
-          ○ Running in local mode <br></br><br></br>
-        </div>
-      )}
-
       {/* Settings panel */}
-      <div className="settings">
-        <div className="settings__title-row">
-          <span className="settings__title">Extraction settings</span>
+      <div className="panel">
+        <div className="panel__head">
+          <span className="panel__title">Extraction settings</span>
           <button
+            className="btn btn--ghost"
             onClick={() => setSettings(DEFAULT_SETTINGS)}
-            className="btn bg-transparent border border-rose-500 rounded-[4px] px-3.5 py-1.5 text-rose-500 text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-rose-500/10"
+            disabled={isProcessing}
           >
-            Reset Defaults
+            Reset defaults
           </button>
         </div>
-        
-        {/* Local Processing Bypass Toggle Box */}
-        <div style={{
-          display: 'flex', 
-          alignItems: 'center', 
-          justifyContent: 'space-between', 
-          padding: '12px', 
-          background: '#1a1a2e', 
-          border: '1px solid #333', 
-          borderRadius: '6px', 
-          marginBottom: '20px'
-        }}>
-          <div>
-            <span style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', color: '#fff' }}>
-              Force Local Processing Mode
-            </span>
-            <span style={{ fontSize: '11px', color: '#888' }}>
-              Bypasses remote server APIs entirely. This is only relevant if you have connected to a backend.
+
+        {/* Primary settings — the choices that most change the output */}
+        <div className="option-row">
+          <div className="option-row__text">
+            <span className="option-row__label">Model quality</span>
+            <span className="option-row__hint">
+              Heavier models track harder poses more accurately, but process slower.
             </span>
           </div>
-          <input
-            type="checkbox"
-            checked={useLocalBackend}
-            disabled={isProcessing}
-            onChange={handleLocalBackendToggle}
-            style={{ width: '18px', height: '18px', cursor: 'pointer' }}
-          />
-        </div>
-
-        {/* Hand / finger tracking toggle */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '12px',
-          background: '#1a1a2e',
-          border: '1px solid #333',
-          borderRadius: '6px',
-          marginBottom: '20px'
-        }}>
-          <div>
-            <span style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', color: '#fff' }}>
-              Track hands &amp; fingers
-            </span>
-            <span style={{ fontSize: '11px', color: '#888' }}>
-              Adds finger poses to the skeleton. Turn off to process faster — it skips a model pass on every frame.
-            </span>
-          </div>
-          <input
-            type="checkbox"
-            checked={settings.trackHands}
-            disabled={isProcessing}
-            onChange={(e) => setSetting('trackHands', e.target.checked)}
-            style={{ width: '18px', height: '18px', cursor: 'pointer' }}
-          />
-        </div>
-
-        <div className="settings__grid">
-
-          <div className="setting">
-            <div className="setting__header">
-              <span className="setting__label">Capture fps</span>
-              <span className="setting__value">{settings.captureFps} fps</span>
-            </div>
-            <input type="range" min={1} max={30} step={1}
-              disabled={isProcessing}
-              value={settings.captureFps}
-              onChange={(e) => setSetting('captureFps', Number(e.target.value))}
-            />
-            <span className="setting__hint">
-              How often to sample the video — lower = fewer duplicate poses in lower fps videos
-            </span>
-          </div>
-
-          <div className="setting">
-            <div className="setting__header">
-              <span className="setting__label">Confidence threshold</span>
-              <span className="setting__value">{Math.round(settings.confidenceThreshold * 100)}%</span>
-            </div>
-            <input type="range" min={0.1} max={0.95} step={0.05}
-              disabled={isProcessing}
-              value={settings.confidenceThreshold}
-              onChange={(e) => setSetting('confidenceThreshold', Number(e.target.value))}
-            />
-            <span className="setting__hint">
-              Drop frames where the positions of joints are uncertain — higher = fewer, more accurate frames
-            </span>
-          </div>
-
-          <div className="setting">
-            <div className="setting__header">
-              <span className="setting__label">Keyframe sensitivity</span>
-              <span className="setting__value">{settings.keyframeThreshold.toFixed(2)}</span>
-            </div>
-            <input type="range" min={0.01} max={0.2} step={0.01}
-              disabled={isProcessing}
-              value={settings.keyframeThreshold}
-              onChange={(e) => setSetting('keyframeThreshold', Number(e.target.value))}
-            />
-            <span className="setting__hint">
-              Minimum pose difference to count as a new keyframe — higher = fewer, more unique poses
-            </span>
-          </div>
-
-          <div className="setting">
-            <div className="setting__header">
-              <span className="setting__label">Max frames</span>
-              <span className="setting__value">{settings.maxFrames}</span>
-            </div>
-            <input type="range" min={10} max={1000} step={5}
-              disabled={isProcessing}
-              value={settings.maxFrames}
-              onChange={(e) => setSetting('maxFrames', Number(e.target.value))}
-            />
-            <span className="setting__hint">
-              Hard frame cap — spreads frames evenly if total number of keyframes exceeds this cap
-            </span>
-          </div>
-
-          <div className="setting">
-            <div className="setting__header">
-              <span className="setting__label">Model quality</span>
-              <span className="setting__value">{settings.modelQuality}</span>
-            </div>
+          <div className="option-row__control">
             <select
+              className="select"
               disabled={isProcessing}
               value={settings.modelQuality}
               onChange={(e) => setSetting('modelQuality', e.target.value)}
-              style={{
-                width: '100%', padding: '6px 8px', background: '#1a1a2e',
-                color: '#fff', border: '1px solid #333', borderRadius: '4px',
-                fontFamily: 'monospace', fontSize: '12px', cursor: 'pointer',
-              }}
             >
               <option value="lite">Lite — fastest</option>
               <option value="full">Full — balanced (default)</option>
               <option value="heavy">Heavy — most accurate</option>
             </select>
-            <span className="setting__hint">
-              Detection model — heavier models track harder poses more accurately but process slower
+          </div>
+        </div>
+
+        <div className="option-row">
+          <div className="option-row__text">
+            <span className="option-row__label">Track hands &amp; fingers</span>
+            <span className="option-row__hint">
+              Adds finger poses to the skeleton. Turn off to process faster — it skips a model pass on every frame.
             </span>
           </div>
-
-        </div>
-      </div>
-
-      {/* Upload row */}
-      <div className="upload-row">
-        <div
-          className={uploadZoneClass}
-          onClick={() => !isProcessing && inputRef.current?.click()}
-          onDrop={handleDrop}
-          onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
-          onDragLeave={() => setDragOver(false)}
-          >
-          <input
-            ref={inputRef}
-            type="file"
-            accept="video/*,image/jpeg,image/png,image/webp"
-            style={{ display: 'none' }}
-            onChange={(e) => handleFile(e.target.files[0])}
-          />
-          <div className="upload-zone__icon">⬆</div>
-          <div className="upload-zone__label">
-            {isProcessing ? 'Processing…' : 'Drop a video or click to upload'}
+          <div className="option-row__control">
+            <Switch
+              checked={settings.trackHands}
+              disabled={isProcessing}
+              onChange={(e) => setSetting('trackHands', e.target.checked)}
+            />
           </div>
-          <div className="upload-zone__hint">MP4, MOV, WebM · JPG, PNG, WebP</div>
         </div>
+
+        {/* Advanced settings — sensible defaults, tucked away */}
+        <details className="advanced">
+          <summary className="advanced__summary">
+            <span className="advanced__chevron">▶</span>
+            Advanced settings
+          </summary>
+
+          <div className="settings__grid">
+            <div className="setting">
+              <div className="setting__header">
+                <span className="setting__label">Capture fps</span>
+                <span className="setting__value">{settings.captureFps} fps</span>
+              </div>
+              <input type="range" min={1} max={30} step={1}
+                disabled={isProcessing}
+                value={settings.captureFps}
+                onChange={(e) => setSetting('captureFps', Number(e.target.value))}
+              />
+              <span className="setting__hint">
+                How often to sample the video — lower = fewer duplicate poses in lower fps videos
+              </span>
+            </div>
+
+            <div className="setting">
+              <div className="setting__header">
+                <span className="setting__label">Confidence threshold</span>
+                <span className="setting__value">{Math.round(settings.confidenceThreshold * 100)}%</span>
+              </div>
+              <input type="range" min={0.1} max={0.95} step={0.05}
+                disabled={isProcessing}
+                value={settings.confidenceThreshold}
+                onChange={(e) => setSetting('confidenceThreshold', Number(e.target.value))}
+              />
+              <span className="setting__hint">
+                Drop frames where the positions of joints are uncertain — higher = fewer, more accurate frames
+              </span>
+            </div>
+
+            <div className="setting">
+              <div className="setting__header">
+                <span className="setting__label">Keyframe sensitivity</span>
+                <span className="setting__value">{settings.keyframeThreshold.toFixed(2)}</span>
+              </div>
+              <input type="range" min={0.01} max={0.2} step={0.01}
+                disabled={isProcessing}
+                value={settings.keyframeThreshold}
+                onChange={(e) => setSetting('keyframeThreshold', Number(e.target.value))}
+              />
+              <span className="setting__hint">
+                Minimum pose difference to count as a new keyframe — higher = fewer, more unique poses
+              </span>
+            </div>
+
+            <div className="setting">
+              <div className="setting__header">
+                <span className="setting__label">Max frames</span>
+                <span className="setting__value">{settings.maxFrames}</span>
+              </div>
+              <input type="range" min={10} max={1000} step={5}
+                disabled={isProcessing}
+                value={settings.maxFrames}
+                onChange={(e) => setSetting('maxFrames', Number(e.target.value))}
+              />
+              <span className="setting__hint">
+                Hard frame cap — spreads frames evenly if total number of keyframes exceeds this cap
+              </span>
+            </div>
+          </div>
+        </details>
       </div>
 
-      {/* Action Controls Row */}
-      <div className="flex justify-end gap-3 mb-6 min-h-[32px]">
+      {/* Upload zone */}
+      <div
+        className={uploadZoneClass}
+        onClick={() => !isProcessing && inputRef.current?.click()}
+        onDrop={handleDrop}
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+        onDragLeave={() => setDragOver(false)}
+      >
+        <input
+          ref={inputRef}
+          type="file"
+          accept="video/*,image/jpeg,image/png,image/webp"
+          style={{ display: 'none' }}
+          onChange={(e) => handleFile(e.target.files[0])}
+        />
+        <div className="upload-zone__icon">⬆</div>
+        <div className="upload-zone__label">
+          {isProcessing ? 'Processing…' : 'Drop a video or click to upload'}
+        </div>
+        <div className="upload-zone__hint">MP4, MOV, WebM · JPG, PNG, WebP</div>
+      </div>
+
+      {/* Action row */}
+      <div className="actions">
         {isProcessing && (
-          <button
-            className="btn bg-transparent border border-red-500 rounded-[4px] px-3.5 py-1.5 text-red-500 text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-red-500/10"
-            onClick={cancelProcessing}
-          >
+          <button className="btn btn--danger" onClick={cancelProcessing}>
             ✕ Cancel
           </button>
         )}
         {lastFile && !isProcessing && (
           <button
-            className="btn bg-transparent border border-indigo-500 rounded-[4px] px-3.5 py-1.5 text-indigo-500 text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-indigo-500/10"
+            className="btn btn--accent"
             onClick={() => { pendingFileRef.current = lastFile; setShowModal(true) }}
           >
             ↺ Rescan
           </button>
         )}
       </div>
-      <br />
 
-      {/* Modal to be shown immediately after file drop */}
+      {/* Multi-person modal, shown right after a video is dropped */}
       {showModal && (
         <div className="modal-overlay" onClick={() => setShowModal(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal__title">Are there several people in this video?</div>
             <p className="modal__desc">
-              Single person videos process faster and more accurately.<br />
+              Single-person videos process faster and more accurately.<br />
               Choose multi-person to manually select who to track.
             </p>
             <div className="modal__actions">
-              <button
-                className="btn bg-transparent border border-[#39e8a0] rounded-[4px] px-5 py-2 text-[#39e8a0] text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-[#39e8a0]/10"
-                onClick={handleSinglePerson}
-              >
+              <button className="btn btn--green" onClick={handleSinglePerson}>
                 Just one person
               </button>
-              <button
-                className="btn bg-transparent border border-[#7c6cff] rounded-[4px] px-5 py-2 text-[#7c6cff] text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-[#7c6cff]/10"
-                onClick={handleMultiPerson}
-              >
+              <button className="btn btn--accent" onClick={handleMultiPerson}>
                 Multiple people
               </button>
             </div>
@@ -403,7 +340,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Error Output Banner */}
+      {/* Error banner */}
       {error && <div className="error-banner">{error}</div>}
 
       {/* Person selector filmstrip */}
@@ -437,19 +374,16 @@ export default function App() {
             <h2 className="inspector-header__title">Frame Inspector</h2>
             <div style={{ display: 'flex', gap: 8 }}>
               <button
-                className="btn bg-transparent border border-[#f5a623] rounded-[4px] px-3.5 py-1.5 text-[#f5a623] text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-[#f5a623]/10"
+                className="btn btn--amber"
                 onClick={() => exportBVH(frames, {
-                  captureFps:  stats.captureFps,
-                  clipName:    stats.clipName,
-                  boneLengths: stats.boneLengths,
+                  captureFps:   stats.captureFps,
+                  boneLengths:  stats.boneLengths,
+                  modelQuality: stats.modelQuality,
                 })}
               >
                 ↓ Export BVH
               </button>
-              <button
-                className="btn bg-transparent border border-green-500 rounded-[4px] px-3.5 py-1.5 text-green-500 text-xs font-mono cursor-pointer transition-colors duration-100 hover:bg-green-500/10"
-                onClick={exportJSON}
-              >
+              <button className="btn btn--green" onClick={exportJSON}>
                 ↓ Export JSON
               </button>
             </div>

@@ -1,7 +1,6 @@
 // ── Orientation Estimator ─────────────────────────────────────────────────────
 // Estimates body yaw (rotation around Y axis) from MediaPipe landmarks.
-// Fuses multiple geometric signals with Gemini Vision as the primary source when available. 
-// Detects shot cuts.
+// Fuses multiple geometric signals into a single smoothed yaw, and detects shot cuts.
 //
 // Yaw convention: 0° = facing camera, 90° = person's left side facing camera, -90° = person's right side, 180°/-180° = facing away.
 
@@ -126,30 +125,9 @@ export class OrientationEstimator {
   // ── Process one frame ─────────────────────────────────────────────────────
   // Returns the frame enriched with: { yaw, rawYaw, view, shotCut, source }.
   process(frame) {
-    const { landmarks: lms, worldLandmarks: worldLms, geminiOrientation } = frame
+    const { landmarks: lms, worldLandmarks: worldLms } = frame
 
-    // ── Gemini Vision takes priority when confident ────────────────────────
-    // Gemini can see the actual visual appearance of the body (clothing, face, etc).
-    if (geminiOrientation?.confidence > 0.6) {
-      const yaw = geminiOrientation.yaw_degrees
-      // Snap the smoother to Gemini's value so heuristic frames.
-      this._yawSmooth = yaw
-      this._prevYaw   = yaw
-
-      const absYaw = Math.abs(yaw)
-      const view =
-        absYaw < 45  ? 'front'   :
-        absYaw < 135 ? 'side'    :
-        absYaw < 160 ? 'rear_3q' : 'rear'
-
-      return {
-        ...frame,
-        orientation: { yaw, rawYaw: yaw, view, shotCut: false, source: 'gemini' }
-      }
-    }
-
-    // ── Geometric heuristic fallback ──────────────────────────────────────
-    // Used between Gemini samples (every non-1fps frame) and when the backend is unavailable.
+    // ── Geometric yaw estimate from the landmarks ─────────────────────────
     const rawYaw = fuseYawSignals(lms, worldLms)
 
     // ── Shot cut detection ────────────────────────────────────────────────

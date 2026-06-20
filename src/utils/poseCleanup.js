@@ -1,11 +1,11 @@
 // ── Pose cleanup ──────────────────────────────────────────────────────────────
-// Post-processing that runs over the full captured sequence (after MediaPipe +
-// Gemini, before the One Euro filter).
+// Post-processing that runs over the full captured sequence (after MediaPipe
+// detection, before the One Euro filter).
 
 // ── Temporal gap-fill for occluded joints ─────────────────────────────────────
 // MediaPipe drops a joint's visibility when it goes behind the body or off-frame.
-// Rather than leave those frames with stale/garbage positions (or let the Gemini
-// agent hallucinate them), we interpolate each low-visibility joint from the
+// Rather than leave those frames with stale/garbage positions, we interpolate each
+// low-visibility joint from the
 // nearest confident frames on either side. This also hands the One Euro filter a
 // uniform, continuous series for the first time (previously low-confidence joints
 // produced jumps the filter smeared across neighbours).

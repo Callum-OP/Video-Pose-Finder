@@ -2,7 +2,19 @@ import { useRef, useState, useCallback, useEffect } from 'react'
 import { PoseLandmarker, HandLandmarker, FilesetResolver } from '@mediapipe/tasks-vision'
 import { LandmarkFilterBank } from '../utils/oneEuroFilter'
 import { temporalGapFill } from '../utils/poseCleanup'
-import { getOrientation, getGravityOrientation, identifyPersons, completeLimbs, saveSession, getHandPoses, getFingerPoses, nameClip, snapshotVideoFrame } from '../utils/poseFinderAgent'
+
+// ── Snapshot a video frame to an offscreen canvas ─────────────────────────────
+// The key fix for the video-vs-image accuracy gap. Instead of passing the <video>
+// element directly to MediaPipe (which reads whatever frame the decoder currently
+// holds), we draw the current frame to a canvas first. The canvas is a stable
+// snapshot that won't change mid-detection, matching what the image path does.
+function snapshotVideoFrame(videoEl) {
+  const canvas = document.createElement('canvas')
+  canvas.width  = videoEl.videoWidth
+  canvas.height = videoEl.videoHeight
+  canvas.getContext('2d').drawImage(videoEl, 0, 0)
+  return canvas
+}
 
 // MediaPipe landmark indices for the connections that'll be drawn.
 export const POSE_CONNECTIONS = [
@@ -175,45 +187,9 @@ function normaliseHandLandmarks(rawLms) {
   }))
 }
 
-// Apply Gemini limb corrections to a landmarks array.
-// Gemini estimates positions for hidden/occluded joints from the visual context.
-// Only applies corrections where Gemini confidence > 0.5 to avoid bad guesses.
-function applyLimbCorrections(landmarks, worldLandmarks, corrections) {
-  if (!corrections?.length) return { landmarks, worldLandmarks }
-
-  const correctedLms   = [...landmarks]
-  const correctedWorld = worldLandmarks ? [...worldLandmarks] : null
-
-  for (const fix of corrections) {
-    if (fix.confidence > 0.5 && correctedLms[fix.landmark_index]) {
-      // Apply 2D image-space correction to screen landmarks
-      correctedLms[fix.landmark_index] = {
-        ...correctedLms[fix.landmark_index],
-        x: fix.estimated_x,
-        y: fix.estimated_y,
-        v: fix.confidence,
-      }
-
-      // Apply Z depth correction to world landmarks if available.
-      // This is the key improvement over the old version — previously only X/Y were corrected,
-      // leaving the 3D skeleton depth wrong for occluded joints. Gemini now estimates
-      // depth from body proportions and foreshortening cues in the image.
-      if (correctedWorld?.[fix.landmark_index] && fix.z_depth !== undefined) {
-        correctedWorld[fix.landmark_index] = {
-          ...correctedWorld[fix.landmark_index],
-          z: fix.z_depth,
-          v: fix.confidence,
-        }
-      }
-    }
-  }
-
-  return { landmarks: correctedLms, worldLandmarks: correctedWorld }
-}
-
 // ── Compute finger bend angles from MediaPipe hand landmarks ──────────────────
 // For each finger, compute bend at each joint using the angle between consecutive bone vectors.
-// Returns a structure matching the Gemini finger-poses format so BVH export can consume either source.
+// Returns a per-finger structure the BVH exporter consumes for finger rotations.
 function computeFingerAnglesFromLandmarks(handLms) {
   const sub  = (a, b) => [a.x - b.x, a.y - b.y, a.z - b.z]
   const dot  = (a, b) => a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
@@ -345,10 +321,6 @@ export function usePoseExtractor() {
   const [scrubPersons, setScrubPersons]   = useState([])
   // Storage array for the filmstrip/pre-scan view mode
   const [scanFrames, setScanFrames]       = useState([])
-  // Gemini-identified persons at first frame (for multi-person selection UI)
-  const [geminiPersons, setGeminiPersons] = useState([])
-  // Clip name returned by Gemini after processing, used as BVH filename
-  const [clipName, setClipName]           = useState(null)
 
   const selectPersonRef  = useRef(null)
   const statsSummaryRef  = useRef(null)
@@ -399,8 +371,6 @@ export function usePoseExtractor() {
     setProgress(0)
     setScrubPersons([])
     setScanFrames([])
-    setGeminiPersons([])
-    setClipName(null)
     fileRef.current = null
     if (scrubVideoRef.current) {
       URL.revokeObjectURL(scrubVideoRef.current.src)
@@ -460,8 +430,6 @@ export function usePoseExtractor() {
     setProgress(0)
     setScrubPersons([])
     setScanFrames([])
-    setGeminiPersons([])
-    setClipName(null)
     fileRef.current = file
 
     // Clean up any previous scrub video
@@ -504,8 +472,6 @@ export function usePoseExtractor() {
     setStats(null)
     setProgress(0)
     setScrubPersons([])
-    setGeminiPersons([])
-    setClipName(null)
     fileRef.current = file
 
     if (scrubVideoRef.current) {
@@ -538,21 +504,6 @@ export function usePoseExtractor() {
     const totalFrames = Math.ceil(videoDuration * scanFps)
 
     setStatus('prescanning')
-
-    // Read toggle preference right before execution loop
-    const isLocalMode = localStorage.getItem('use_local_backend') === 'true'
-
-    if (!isLocalMode) {
-      await seekToFrame(video, 0)
-      const videoId      = file.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()
-      const geminiPeople = await identifyPersons(video, videoId, 0)
-      if (geminiPeople?.persons?.length > 0) {
-        setGeminiPersons(geminiPeople.persons)
-        console.log(`[Gemini] Identified ${geminiPeople.total_count} person(s) in first frame`)
-      }
-    } else {
-      console.log('[Pipeline] Local Mode Active: Skipping Gemini identification pass.')
-    }
 
     // Reset synthetic timestamp for this scan pass
     syntheticTimestampRef.current = 0
@@ -630,7 +581,6 @@ export function usePoseExtractor() {
   }, [])
 
   // ── Single image pose extraction ──────────────────────────────────────────
-  // Also runs Gemini limb completion on the result for better accuracy.
   // Works for JPG, PNG, WebP, useful for pose reference images.
   const processImage = useCallback(async (file, settings = DEFAULT_SETTINGS) => {
     isCancelledRef.current = false
@@ -638,7 +588,6 @@ export function usePoseExtractor() {
     setFrames([])
     setStats(null)
     setProgress(0)
-    setClipName(null)
 
     const modelQuality = settings.modelQuality ?? 'full'
 
@@ -715,36 +664,12 @@ export function usePoseExtractor() {
       }
     }
 
-    const isLocalMode       = localStorage.getItem('use_local_backend') === 'true'
-    const hasLowConfidence  = landmarks.some(lm => (lm.v ?? 1) < 0.4)
-
-    if (hasLowConfidence && !isLocalMode) {
-      const imageId    = file.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()
-      const completion = await completeLimbs(canvas, imageId, 0, landmarks)
-      if (completion?.corrections?.length) {
-        // Apply corrections to both 2D landmarks and world landmarks (including Z depth)
-        const corrected = applyLimbCorrections(landmarks, worldLandmarks, completion.corrections)
-        landmarks     = corrected.landmarks
-        worldLandmarks = corrected.worldLandmarks
-        console.log(`[Gemini] Applied ${completion.corrections.length} limb correction(s) to image`)
-      }
-    }
-
-    // If hand tracking is on, MediaPipe hands didn't detect, and backend is
-    // available, ask Gemini for fingers.
-    let geminiFingerPoses = null
-    if (trackHands && !handData && !isLocalMode) {
-      const imageId = file.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()
-      geminiFingerPoses = await getFingerPoses(canvas, imageId, 0)
-    }
-
     const singleFrame = [{
       frameIndex:        0,
       timeMs:            0,
       landmarks,
       worldLandmarks,
       handData,
-      geminiFingerPoses,
     }]
 
     setFrames(singleFrame)
@@ -755,6 +680,7 @@ export function usePoseExtractor() {
       duration:      '0.00',
       captureFps:    1,
       totalSampled:  1,
+      modelQuality,
     })
     setStatus('done')
   }, [])
@@ -787,7 +713,6 @@ export function usePoseExtractor() {
     setStats(null)
     setProgress(0)
     setScrubPersons([])
-    setClipName(null)
 
     if (scrubVideoRef.current) {
       URL.revokeObjectURL(scrubVideoRef.current.src)
@@ -808,14 +733,15 @@ export function usePoseExtractor() {
       return
     }
 
-    // Load HandLandmarker alongside pose — failure is non-fatal, finger data becomes Gemini-only.
-    // Skipped entirely when hand tracking is off, which removes a full model inference per frame.
+    // Load HandLandmarker alongside pose — failure is non-fatal, finger data is
+    // simply omitted. Skipped entirely when hand tracking is off, which removes a
+    // full model inference per frame.
     if (trackHands) {
       try {
         handLandmarker = await createHandLandmarker()
         console.log('[HandLandmarker] Loaded successfully')
       } catch (e) {
-        console.warn('[HandLandmarker] Failed to load, will use Gemini fallback for fingers:', e)
+        console.warn('[HandLandmarker] Failed to load, finger data will be omitted:', e)
         handLandmarker = null
       }
     } else {
@@ -841,35 +767,12 @@ export function usePoseExtractor() {
     // The One Euro Filter adapts its smoothing to the signal speed, heavy smoothing at rest, light smoothing during fast motion.
     filterBankRef.current = new LandmarkFilterBank({ freq: captureFps })
 
-    // Stable video ID derived from filename, used as MongoDB cache key so
-    // re-processing the same video reuses Gemini's previous orientation answers.
-    const videoId = file.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()
-
-    let lastOrientationTime       = -1
-    const ORIENTATION_INTERVAL    = 1   // seconds
-
-    // Gemini limb completion: trigger on every frame with new occlusions.
-    // Previously this had a 3-second minimum interval which meant occlusions
-    // during fast movement went uncorrected for too long.
-    let lastLimbCompletionTime    = -2
-    const LIMB_COMPLETION_INTERVAL = 1  // seconds — tighter interval for better tracking
-
-    // Track which joints were occluded last frame to detect transition into occlusion
-    let prevOccludedJoints = new Set()
-
-    // Gravity orientation state — persisted across frames, updated at 1fps
-    // alongside /orientation. Non-standing poses need the BVH skeleton rotated.
-    let currentGravityOrientation = null
-
     let seedLocked = seed === null
     const captured = []
     let frameIndex = 0
 
     // Reset synthetic timestamp for a clean processing run
     syntheticTimestampRef.current = 0
-
-    // Capture the static local mode check parameter
-    const isLocalMode = localStorage.getItem('use_local_backend') === 'true'
 
     for (let t = 0; t < videoDuration; t += frameStep) {
       // Exit if user cancels
@@ -919,10 +822,7 @@ export function usePoseExtractor() {
             }
           }
 
-          let geminiOrientation     = null
-          let geminiHandPoses       = null
-          let geminiFingerPoses     = null
-          let handData              = null
+          let handData = null
 
           // ── Run MediaPipe HandLandmarker every frame ──────────────────
           // Pass the same canvas snapshot so both models see the same frame.
@@ -937,81 +837,6 @@ export function usePoseExtractor() {
             }
           }
 
-          if (!isLocalMode) {
-            // ── Orientation + hand poses + gravity at 1fps ────────────
-            if (t - lastOrientationTime >= ORIENTATION_INTERVAL) {
-              lastOrientationTime = t
-
-              // Run orientation, gravity, and (only when hand tracking is on) hand
-              // poses in parallel for speed.
-              const [orientResult, gravityResult, handPoseResult] = await Promise.all([
-                getOrientation(video, videoId, frameIndex),
-                getGravityOrientation(video, videoId, frameIndex),
-                trackHands ? getHandPoses(video, videoId, frameIndex) : Promise.resolve(null),
-              ])
-
-              geminiOrientation         = orientResult
-              currentGravityOrientation = gravityResult  // Persist across frames until next update
-              geminiHandPoses           = handPoseResult
-
-              // Only ask Gemini for fingers if hand tracking is on and MediaPipe
-              // didn't detect hands this second.
-              if (trackHands && !handData) {
-                geminiFingerPoses = await getFingerPoses(video, videoId, frameIndex)
-                if (geminiFingerPoses) {
-                  console.log(`[Gemini] Finger fallback used at t=${t.toFixed(2)}s`)
-                }
-              }
-            }
-
-            // ── Limb completion: trigger on new or ongoing occlusions ─────
-            // Now fires every LIMB_COMPLETION_INTERVAL seconds (down from 3s)
-            // whenever any joint is occluded. Previously ongoing occlusions
-            // went uncorrected between interval triggers.
-            const currentOccluded = new Set(
-              landmarks
-                .map((lm, i) => ({ i, v: lm.v ?? 1 }))
-                .filter(({ v }) => v < 0.4)
-                .map(({ i }) => i)
-            )
-            const newlyOccluded = [...currentOccluded].filter(i => !prevOccludedJoints.has(i))
-            const hasOcclusion  = currentOccluded.size > 0
-
-            if (hasOcclusion && (newlyOccluded.length > 0 || t - lastLimbCompletionTime >= LIMB_COMPLETION_INTERVAL)) {
-              lastLimbCompletionTime = t
-              const completion = await completeLimbs(snapshot, videoId, frameIndex, landmarks)
-              if (completion?.corrections?.length) {
-                // Apply to both screen landmarks and world landmarks (with Z depth)
-                const corrected = applyLimbCorrections(landmarks, worldLandmarks, completion.corrections)
-                landmarks     = corrected.landmarks
-                worldLandmarks = corrected.worldLandmarks
-                console.log(`[Gemini] ${newlyOccluded.length > 0 ? 'New' : 'Ongoing'} occlusion — applied ${completion.corrections.length} correction(s) at t=${t.toFixed(2)}s`)
-              }
-            }
-
-            prevOccludedJoints = currentOccluded
-
-          } else {
-            // ── Local Fallback Mode Path ──────────────────────────────
-            if (t - lastOrientationTime >= ORIENTATION_INTERVAL) {
-              lastOrientationTime = t
-              geminiOrientation   = { source: 'local_fallback', yaw: 0, view: 'front', shotCut: false }
-            }
-          }
-
-          // ── Snapshot base64 for clip naming ───────────────────────────
-          // Store a JPEG snapshot on a small subset of frames so nameClip()
-          // can sample them after processing completes without needing the video.
-          // Only store on ~4 evenly spaced frames to avoid memory pressure.
-          let _snapshotB64 = undefined
-          const isNamingFrame = frameIndex === 0
-            || frameIndex === Math.floor(totalFrames * 0.33)
-            || frameIndex === Math.floor(totalFrames * 0.66)
-            || frameIndex === totalFrames - 1
-          if (isNamingFrame && !isLocalMode) {
-            _snapshotB64 = snapshot.toDataURL('image/jpeg', 0.6).split(',')[1]
-          }
-
           // ── Pass 1 collects RAW frames ────────────────────────────────
           // One Euro filtering is deferred to pass 2 (below) so it runs over the
           // full, time-ordered series instead of inline on each surviving frame.
@@ -1020,12 +845,7 @@ export function usePoseExtractor() {
             timeMs: Math.round(t * 1000),
             landmarks,
             worldLandmarks,
-            geminiOrientation,
-            geminiHandPoses,
-            geminiFingerPoses,
-            geminiGravityOrientation: currentGravityOrientation,  // Passed through to BVH exporter
             handData,           // MediaPipe hand landmarks + computed finger angles
-            _snapshotB64,       // Retained for clip naming only, not exported to BVH
           })
         }
       }
@@ -1048,7 +868,7 @@ export function usePoseExtractor() {
 
     // ── Pass 2: temporal cleanup (70-90%) ──────────────────────────────
     // First fill occluded joints by interpolating from neighbouring confident
-    // frames (on the post-Gemini landmarks), then run the One Euro filter. The
+    // frames, then run the One Euro filter. The
     // filter is stateful and order-dependent, so it must see the full, now
     // gap-free series in chronological order.
     const gapFilled = temporalGapFill(captured, confidenceThreshold)
@@ -1083,35 +903,8 @@ export function usePoseExtractor() {
       console.log('[BVH] Median bone lengths:', boneLengths)
     }
 
-    // ── Clip naming via Gemini ─────────────────────────────────────────
-    // Samples the stored JPEG snapshots from the processed frames and asks
-    // Gemini what movement it sees. The result becomes the BVH filename.
-    let resolvedClipName = null
-    if (!isLocalMode) {
-      try {
-        const namingResult = await nameClip(finalFrames, videoId)
-        if (namingResult?.filename) {
-          resolvedClipName = namingResult.filename
-          setClipName(namingResult)
-          console.log(`[Gemini] Clip named: "${namingResult.filename}" (${namingResult.activity})`)
-        }
-      } catch (e) {
-        console.warn('[Gemini] Clip naming failed, using default filename:', e)
-      }
-    }
-
-    // Compute orientation summary for the stats panel.
-    const viewCounts = finalFrames.reduce((acc, f) => {
-      const v = f.orientation?.view ?? 'unknown'
-      acc[v]  = (acc[v] || 0) + 1
-      return acc
-    }, {})
-    const shotCuts                = finalFrames.filter(f => f.orientation?.shotCut).length
-    const geminiOrientationFrames = finalFrames.filter(f => f.geminiOrientation).length
-    const handDataFrames          = finalFrames.filter(f => f.handData).length
-    const geminiFingerFrames      = finalFrames.filter(f => f.geminiFingerPoses).length
-    const gravityFrames           = finalFrames.filter(f => f.geminiGravityOrientation?.confidence > 0.5).length
-    const poseTypes               = [...new Set(finalFrames.map(f => f.geminiGravityOrientation?.pose_type).filter(Boolean))]
+    // How many final frames carry MediaPipe hand/finger data, for the stats panel.
+    const handDataFrames = finalFrames.filter(f => f.handData).length
 
     setFrames(finalFrames)
     setStats({
@@ -1121,38 +914,13 @@ export function usePoseExtractor() {
       duration:      videoDuration.toFixed(2),
       captureFps,
       totalSampled:  totalFrames,
-      viewCounts,
-      shotCuts,
-      geminiOrientationFrames,
       handDataFrames,
-      geminiFingerFrames,
-      gravityFrames,
-      poseTypes,
-      clipName:      resolvedClipName,
       boneLengths,
+      modelQuality,
     })
     releaseWakeLock()
     setStatus('done')
     scrollToRef(statsSummaryRef)
-
-    // Save session database call logic.
-    if (!isLocalMode) {
-      saveSession(videoId, finalFrames.length, {
-        duration:      videoDuration.toFixed(2),
-        captureFps,
-        frameCount:    finalFrames.length,
-        shotCuts,
-        viewCounts,
-        geminiOrientationFrames,
-        handDataFrames,
-        geminiFingerFrames,
-        gravityFrames,
-        poseTypes,
-        clipName:      resolvedClipName,
-      })
-    } else {
-      console.log('[Pipeline] Local Mode Active: Skipping MongoDB cloud save session synchronization.')
-    }
   }, [acquireWakeLock, releaseWakeLock])
 
   return {
@@ -1170,8 +938,6 @@ export function usePoseExtractor() {
     error,
     duration,
     scrubPersons,
-    geminiPersons,
-    clipName,
     fileRef,
     selectPersonRef,
     statsSummaryRef,
