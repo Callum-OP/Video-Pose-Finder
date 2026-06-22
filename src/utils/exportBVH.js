@@ -862,6 +862,23 @@ function buildMotion(frames, frameTime, off, captureFps, boneLengths = null, mod
     poses.push({ frame, yawDeg, gravityAngleDeg, p, isGrounded: true })
   }
 
+  // ── Pass 1.25: damp knee jitter (reduces leg "wobble") ───────────────────
+  // Lightly smooth each knee position across neighbouring frames. This only
+  // softens the bend angle frame-to-frame: bone lengths come from fixed BVH
+  // offsets and the bend side is already decided, so it can't cross or break a
+  // leg — it just stops the knee twitching. Symmetric tap (no lag), computed from
+  // the original positions so it doesn't cascade; endpoints left untouched.
+  if (poses.length >= 3) {
+    const lKnee = poses.map(pp => pp.p.leftLeg)
+    const rKnee = poses.map(pp => pp.p.rightLeg)
+    const smooth3 = (arr, i) =>
+      add(scale(arr[i], 0.5), add(scale(arr[i - 1], 0.25), scale(arr[i + 1], 0.25)))
+    for (let i = 1; i < poses.length - 1; i++) {
+      poses[i].p.leftLeg  = smooth3(lKnee, i)
+      poses[i].p.rightLeg = smooth3(rKnee, i)
+    }
+  }
+
   // ── Pass 1.5: contact-aware foot grounding (vertical) ───────────────────
   const rootYOffset = groundSkeleton(poses, boneLengths, captureFps)
 

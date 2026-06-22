@@ -283,6 +283,25 @@ async function seekToFrame(video, t) {
   if (_rvfcWorks === null) _rvfcWorks = fired
 }
 
+// ── Persist the last processed result ─────────────────────────────────────────
+// The Export buttons regenerate the BVH/JSON from the in-memory `frames`, so we
+// only persist `frames` + `stats` to restore a previous session after a reload.
+// The source file isn't kept (Files can't be serialised, and Rescan needs the
+// original upload), but the processed result — and therefore export — survives.
+const RESULT_STORAGE_KEY = 'posefinder_last_result'
+
+function loadSavedResult() {
+  try {
+    const raw = localStorage.getItem(RESULT_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (parsed?.frames?.length) return parsed
+  } catch {
+    // Corrupt/unreadable entry — ignore and start fresh.
+  }
+  return null
+}
+
 // Main Public Hook
 export function usePoseExtractor() {
   const landmarkerRef     = useRef(null)
@@ -311,10 +330,15 @@ export function usePoseExtractor() {
   // increases, decoupled from actual video time.
   const syntheticTimestampRef = useRef(0)
 
-  const [status, setStatus]           = useState('idle')
+  // Restore the last processed result (if any) so it's available after a reload.
+  // useRef has no lazy initialiser, so guard with `undefined` to read storage once.
+  const restoredRef = useRef(undefined)
+  if (restoredRef.current === undefined) restoredRef.current = loadSavedResult()
+
+  const [status, setStatus]           = useState(() => restoredRef.current ? 'done' : 'idle')
   const [progress, setProgress]       = useState(0)
-  const [frames, setFrames]           = useState([])
-  const [stats, setStats]             = useState(null)
+  const [frames, setFrames]           = useState(() => restoredRef.current?.frames ?? [])
+  const [stats, setStats]             = useState(() => restoredRef.current?.stats ?? null)
   const [error, setError]             = useState(null)
   const [duration, setDuration]       = useState(0)
   // Detected persons at the current scrub position
@@ -361,6 +385,29 @@ export function usePoseExtractor() {
     document.addEventListener('visibilitychange', onVisible)
     return () => document.removeEventListener('visibilitychange', onVisible)
   }, [acquireWakeLock])
+
+  // Persist the result whenever a run completes, so it can be restored on reload.
+  // Only writes on a finished run (status 'done'); cancels/in-progress runs never
+  // overwrite the saved copy.
+  useEffect(() => {
+    if (status !== 'done' || frames.length === 0) return
+    try {
+      localStorage.setItem(RESULT_STORAGE_KEY, JSON.stringify({ frames, stats, savedAt: Date.now() }))
+    } catch (e) {
+      // Quota exceeded or non-serialisable — non-fatal, just skip persisting.
+      console.warn('[PoseFinder] Could not save last result to localStorage:', e)
+    }
+  }, [status, frames, stats])
+
+  // Clear the displayed result and the saved copy (the "clear" action).
+  const clearResults = useCallback(() => {
+    try { localStorage.removeItem(RESULT_STORAGE_KEY) } catch { /* ignore */ }
+    setFrames([])
+    setStats(null)
+    setError(null)
+    setProgress(0)
+    setStatus('idle')
+  }, [])
 
   const cancelProcessing = useCallback(() => {
     isCancelledRef.current = true
@@ -930,6 +977,7 @@ export function usePoseExtractor() {
     processImage,
     processVideo,
     cancelProcessing,
+    clearResults,
     status,
     progress,
     frames,

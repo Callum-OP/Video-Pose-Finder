@@ -48,7 +48,7 @@ function Switch({ checked, disabled, onChange }) {
 
 export default function App() {
   const {
-    preScan, processImage, processVideo, cancelProcessing,
+    preScan, processImage, processVideo, cancelProcessing, clearResults,
     status, progress,
     frames, scanFrames,
     stats, error,
@@ -385,6 +385,13 @@ export default function App() {
               </button>
               <button className="btn btn--green" onClick={exportJSON}>
                 ↓ Export JSON
+              </button>
+              <button
+                className="btn btn--ghost"
+                onClick={() => { setLastFile(null); clearResults() }}
+                title="Remove the saved result"
+              >
+                ✕ Clear
               </button>
             </div>
           </div>
