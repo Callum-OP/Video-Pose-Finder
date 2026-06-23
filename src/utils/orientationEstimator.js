@@ -113,6 +113,21 @@ function fuseYawSignals(lms, worldLms) {
   return raw * (1 - frontBias / 90)
 }
 
+// ── Torso uprightness ───────────────────────────────────────────────
+// +1 = fully upright, 0 = horizontal, -1 = inverted. World-landmark y points
+// down, so shoulders above hips give a negative dy → positive uprightness.
+// Falls back to screen landmarks (also y-down) when world landmarks are absent.
+function torsoUprightness(lms, worldLms) {
+  const src = worldLms ?? lms
+  const ls = src?.[IDX.lSho], rs = src?.[IDX.rSho], lh = src?.[IDX.lHip], rh = src?.[IDX.rHip]
+  if (!ls || !rs || !lh || !rh) return 1
+  const dx = (ls.x + rs.x) / 2 - (lh.x + rh.x) / 2
+  const dy = (ls.y + rs.y) / 2 - (lh.y + rh.y) / 2
+  const dz = ((ls.z ?? 0) + (rs.z ?? 0)) / 2 - ((lh.z ?? 0) + (rh.z ?? 0)) / 2
+  const l = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1e-6
+  return -dy / l
+}
+
 // ── Main Estimator Class ────────────────────────────────────────────
 export class OrientationEstimator {
   constructor({ captureFps = 30 } = {}) {
@@ -131,14 +146,25 @@ export class OrientationEstimator {
     // ── Geometric yaw estimate from the landmarks ─────────────────────────
     const rawYaw = fuseYawSignals(lms, worldLms)
 
-    // ── Shot cut detection (velocity-aware) ───────────────────────────────
-    // A camera cut / tracking failure shows up as a yaw jump that's both large AND
-    // inconsistent with the body's recent rotation. A genuine fast spin or flip
-    // rotates a lot per frame too, but *consistently* — so we only flag a cut when
-    // the jump is large and SURPRISING vs the recent yaw velocity (this._prevDelta).
-    // This stops fast rotation from being mistaken for a cut and snapped.
+    // ── Yaw trust from torso uprightness ──────────────────────────────────
+    // The geometric yaw signals (hip azimuth, ear separation, shoulder depth) all
+    // assume an upright body. When the torso tips far from vertical — a fall, a
+    // backflip — they're unreliable, so trust ramps from 1 (upright) to 0
+    // (horizontal/inverted) and we HOLD the last good yaw through the inversion
+    // rather than letting garbage swing the orientation. Upright footage keeps
+    // trust = 1, so it behaves exactly as before.
+    const trust = Math.max(0, Math.min(1, torsoUprightness(lms, worldLms) / 0.5))
+
+    // ── Shot cut detection (velocity-aware, only while the yaw is trusted) ─
+    // A camera cut shows up as a yaw jump that's both large AND inconsistent with
+    // the body's recent rotation; a genuine fast spin rotates a lot per frame too,
+    // but consistently. We only assess cuts (and advance the momentum) when the
+    // yaw is trustworthy, so an inverted body's garbage yaw can't trigger a snap.
     let shotCut = false
-    if (this._prevYaw !== null) {
+    if (this._prevYaw === null) {
+      this._yawSmooth = rawYaw
+      this._prevYaw   = rawYaw
+    } else if (trust > 0.5) {
       let delta = rawYaw - this._prevYaw
       if (delta >  180) delta -= 360
       if (delta < -180) delta += 360
@@ -150,12 +176,15 @@ export class OrientationEstimator {
       } else {
         this._prevDelta = delta
       }
-    } else {
-      this._yawSmooth = rawYaw
+      this._prevYaw = rawYaw
     }
+    // else: low trust (inverted/falling) — hold _prevYaw/_prevDelta and the yaw.
 
-    this._yawSmooth = this._alpha * rawYaw + (1 - this._alpha) * this._yawSmooth
-    this._prevYaw   = rawYaw
+    // Blend toward the new yaw, scaled by trust: as trust→0 the yaw is held.
+    if (!shotCut) {
+      const a = this._alpha * trust
+      this._yawSmooth = a * rawYaw + (1 - a) * this._yawSmooth
+    }
 
     const absYaw = Math.abs(this._yawSmooth)
     const view =
