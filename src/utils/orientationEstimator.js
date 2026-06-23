@@ -118,6 +118,7 @@ export class OrientationEstimator {
   constructor({ captureFps = 30 } = {}) {
     this._freq      = captureFps
     this._prevYaw   = null
+    this._prevDelta = 0       // recent yaw velocity (deg/frame), for shot-cut detection
     this._yawSmooth = 0
     this._alpha = 0.3
   }
@@ -130,17 +131,24 @@ export class OrientationEstimator {
     // ── Geometric yaw estimate from the landmarks ─────────────────────────
     const rawYaw = fuseYawSignals(lms, worldLms)
 
-    // ── Shot cut detection ────────────────────────────────────────────────
-    // A yaw jump > 90° in one frame is likely a camera cut or tracking failure and not a real rotation.
-    // Reset the smoother to the new value so it doesn't try to blend between the two frames.
+    // ── Shot cut detection (velocity-aware) ───────────────────────────────
+    // A camera cut / tracking failure shows up as a yaw jump that's both large AND
+    // inconsistent with the body's recent rotation. A genuine fast spin or flip
+    // rotates a lot per frame too, but *consistently* — so we only flag a cut when
+    // the jump is large and SURPRISING vs the recent yaw velocity (this._prevDelta).
+    // This stops fast rotation from being mistaken for a cut and snapped.
     let shotCut = false
     if (this._prevYaw !== null) {
       let delta = rawYaw - this._prevYaw
       if (delta >  180) delta -= 360
       if (delta < -180) delta += 360
-      if (Math.abs(delta) > 90) {
+      const surprise = Math.abs(delta - this._prevDelta)   // deviation from momentum
+      if (Math.abs(delta) > 90 && surprise > 90) {
         shotCut = true
         this._yawSmooth = rawYaw
+        this._prevDelta = 0           // momentum invalid across a cut
+      } else {
+        this._prevDelta = delta
       }
     } else {
       this._yawSmooth = rawYaw
@@ -169,6 +177,7 @@ export class OrientationEstimator {
 
   reset() {
     this._prevYaw   = null
+    this._prevDelta = 0
     this._yawSmooth = 0
   }
 }

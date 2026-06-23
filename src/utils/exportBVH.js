@@ -775,8 +775,16 @@ function groundSkeleton(poses, boneLengths, captureFps) {
     ? (((boneLengths.lThigh ?? 0) + (boneLengths.lShin ?? 0) + (boneLengths.rThigh ?? 0) + (boneLengths.rShin ?? 0)) / 2) || 100
     : 100
 
-  const eligible = poses.map(({ gravityAngleDeg, isGrounded }) =>
-    isGrounded !== false && Math.abs(gravityAngleDeg) < 30)
+  // Only ground frames where the torso is roughly upright. The old gravity/grounded
+  // signal came from the (now-removed) Gemini oracle and is inert, so we judge it
+  // geometrically: the torso-up axis (hips→shoulders) must point near vertical
+  // (+Y). This skips airborne/inverted/lying frames (a backflip, a fall) so their
+  // root height follows the real motion instead of being yanked toward the floor.
+  const eligible = poses.map(({ gravityAngleDeg, isGrounded, p }) => {
+    if (isGrounded === false || Math.abs(gravityAngleDeg) >= 30) return false
+    const up = norm(sub(p.spine2, p.hips))
+    return up[1] > 0.5   // within ~60° of vertical
+  })
 
   const lY = poses.map((pose) => pose.p.leftFoot[1])
   const rY = poses.map((pose) => pose.p.rightFoot[1])

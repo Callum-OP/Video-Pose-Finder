@@ -25,7 +25,11 @@ class LowPassFilter {
 
 // One Euro Filter for a single scalar channel
 class OneEuroScalar {
-  constructor(freq, fmin = 1.0, beta = 0.007, dcutoff = 1.0) {
+  // beta is the speed coefficient: higher = less smoothing during fast motion, so
+  // quick action (flips, falls) tracks instead of lagging/rounding off. 0.02 is a
+  // moderate bump from the old 0.007 — raise further if fast motion still lags,
+  // lower toward 0.007 if slow footage looks jittery.
+  constructor(freq, fmin = 1.0, beta = 0.02, dcutoff = 1.0) {
     this.freq    = freq
     this.fmin    = fmin
     this.beta    = beta
@@ -85,7 +89,7 @@ export class LandmarkFilterBank {
   constructor({
     freq     = 30, // This is replaced later in usePoseExtractor with the actual capture FPS
     fmin     = 1.0,
-    beta     = 0.007,
+    beta     = 0.02, // speed coefficient — higher tracks fast motion better (was 0.007)
     dcutoff  = 1.0,
     numLandmarks = 33
   } = {}) {
