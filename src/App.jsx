@@ -277,6 +277,37 @@ export default function App() {
               </span>
             </div>
           </div>
+
+          {/* Export-time toggles — applied at export, no reprocessing needed */}
+          <div className="option-row">
+            <div className="option-row__text">
+              <span className="option-row__label">Keep feet planted</span>
+              <span className="option-row__hint">
+                Locks the feet to a stable floor so they don't float or sink. Turn off for aerial / high-action clips.
+              </span>
+            </div>
+            <div className="option-row__control">
+              <Switch
+                checked={settings.keepFeetPlanted}
+                onChange={(e) => setSetting('keepFeetPlanted', e.target.checked)}
+              />
+            </div>
+          </div>
+
+          <div className="option-row">
+            <div className="option-row__text">
+              <span className="option-row__label">Strict anatomical limits</span>
+              <span className="option-row__hint">
+                Tightens joint limits (feet, wrists) so limbs stay more rigid and neutral, at the cost of some fidelity.
+              </span>
+            </div>
+            <div className="option-row__control">
+              <Switch
+                checked={settings.strictAnatomy}
+                onChange={(e) => setSetting('strictAnatomy', e.target.checked)}
+              />
+            </div>
+          </div>
         </details>
       </div>
 
@@ -376,9 +407,11 @@ export default function App() {
               <button
                 className="btn btn--amber"
                 onClick={() => exportBVH(frames, {
-                  captureFps:   stats.captureFps,
-                  boneLengths:  stats.boneLengths,
-                  modelQuality: stats.modelQuality,
+                  captureFps:      stats.captureFps,
+                  boneLengths:     stats.boneLengths,
+                  modelQuality:    stats.modelQuality,
+                  keepFeetPlanted: settings.keepFeetPlanted,
+                  strictAnatomy:   settings.strictAnatomy,
                 })}
               >
                 ↓ Export BVH

@@ -51,6 +51,9 @@ export const DEFAULT_SETTINGS = {
   maxFrames:           200,   // The number of frames/poses to keep.
   modelQuality:        'full', // Pose model: 'lite' | 'full' | 'heavy' — higher = more accurate, slower.
   trackHands:          true,   // Run the hand/finger pipeline. Off = faster (skips a per-frame model pass).
+  // ── Export-time options (read at BVH export, applied without reprocessing) ──
+  keepFeetPlanted:     true,   // Ground the feet to a stable floor. Off = feet follow raw motion (better for aerial/action).
+  strictAnatomy:       false,  // Tighten joint limits (foot roll/twist, wrist flex) so limbs stay more rigid/neutral.
 }
 
 export const PERSON_COLORS = ['#7c6cff', '#39e8a0', '#f5a623', '#ff4d6d']

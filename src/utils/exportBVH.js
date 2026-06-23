@@ -818,9 +818,12 @@ function groundSkeleton(poses, boneLengths, captureFps) {
   return offsets
 }
 
-function buildMotion(frames, frameTime, off, captureFps, boneLengths = null, modelQuality = 'full') {
+function buildMotion(frames, frameTime, off, captureFps, boneLengths = null, modelQuality = 'full', { keepFeetPlanted = true, strictAnatomy = false } = {}) {
   const neckStraighten  = neckStraightenFor(modelQuality)
   const headPitchOffset = headPitchOffsetFor(modelQuality)
+  // Strict anatomy tightens the already-clamped joints (feet, wrists) toward neutral.
+  const footLimitScale  = strictAnatomy ? 0.5 : 1
+  const wristFlexLimit  = strictAnatomy ? 45 : 70
   const lines = ['MOTION', `Frames: ${frames.length}`, `Frame Time: ${f(frameTime)}`]
   const DOWN = [0, -1, 0], FWD = [0, 0, 1]
   const REST = {
@@ -888,7 +891,11 @@ function buildMotion(frames, frameTime, off, captureFps, boneLengths = null, mod
   }
 
   // ── Pass 1.5: contact-aware foot grounding (vertical) ───────────────────
-  const rootYOffset = groundSkeleton(poses, boneLengths, captureFps)
+  // Skipped when "keep feet planted" is off, so feet follow the raw vertical
+  // motion (wanted for aerial / high-action clips).
+  const rootYOffset = keepFeetPlanted
+    ? groundSkeleton(poses, boneLengths, captureFps)
+    : new Array(poses.length).fill(0)
 
   // ── Pass 2: emit BVH channels ───────────────────────────────────────────
   for (let fi = 0; fi < poses.length; fi++) {
@@ -984,7 +991,7 @@ function buildMotion(frames, frameTime, off, captureFps, boneLengths = null, mod
     const lWristFlex  = getWristFlex(frame, 'left', lFADir, yawDeg)
 
     // Counteract the 90-degree twist caused by finger tracking Z-forward offsets
-    vals.push(0, lWristFlex, -90)
+    vals.push(0, Math.max(-wristFlexLimit, Math.min(wristFlexLimit, lWristFlex)), -90)
 
     const lFingerAngles = resolveFingerAngles(frame, 'left')
     vals.push(...emitFingerRotations(lFingerAngles, 'left'))
@@ -1011,7 +1018,7 @@ function buildMotion(frames, frameTime, off, captureFps, boneLengths = null, mod
     const rWristFlex  = getWristFlex(frame, 'right', rFADir, yawDeg)
 
     // Balance right hand coordinate frame projection parity
-    vals.push(0, rWristFlex, 90)
+    vals.push(0, Math.max(-wristFlexLimit, Math.min(wristFlexLimit, rWristFlex)), 90)
 
     const rFingerAngles = resolveFingerAngles(frame, 'right')
     vals.push(...emitFingerRotations(rFingerAngles, 'right'))
@@ -1033,8 +1040,9 @@ function buildMotion(frames, frameTime, off, captureFps, boneLengths = null, mod
     const lFRot   = quatFromTo(quatRotate(lLWorld, REST.leftFoot), norm(lFDir))
     const lFLocal = quatMul(quatConj(lLWorld), quatMul(lFRot, lLWorld))
     let lFEuler   = quatToZXY(lFLocal)
-    lFEuler[0]    = Math.max(-p.lFootRollLimit,  Math.min(p.lFootRollLimit,  lFEuler[0]))
-    lFEuler[2]    = Math.max(-p.lFootTwistLimit, Math.min(p.lFootTwistLimit, lFEuler[2]))
+    const lRoll = p.lFootRollLimit * footLimitScale, lTwist = p.lFootTwistLimit * footLimitScale
+    lFEuler[0]    = Math.max(-lRoll,  Math.min(lRoll,  lFEuler[0]))
+    lFEuler[2]    = Math.max(-lTwist, Math.min(lTwist, lFEuler[2]))
     vals.push(...lFEuler)
     vals.push(0, 0, 0)
 
@@ -1055,8 +1063,9 @@ function buildMotion(frames, frameTime, off, captureFps, boneLengths = null, mod
     const rFRot   = quatFromTo(quatRotate(rLWorld, REST.rightFoot), norm(rFDir))
     const rFLocal = quatMul(quatConj(rLWorld), quatMul(rFRot, rLWorld))
     let rFEuler   = quatToZXY(rFLocal)
-    rFEuler[0]    = Math.max(-p.rFootRollLimit,  Math.min(p.rFootRollLimit,  rFEuler[0]))
-    rFEuler[2]    = Math.max(-p.rFootTwistLimit, Math.min(p.rFootTwistLimit, rFEuler[2]))
+    const rRoll = p.rFootRollLimit * footLimitScale, rTwist = p.rFootTwistLimit * footLimitScale
+    rFEuler[0]    = Math.max(-rRoll,  Math.min(rRoll,  rFEuler[0]))
+    rFEuler[2]    = Math.max(-rTwist, Math.min(rTwist, rFEuler[2]))
     vals.push(...rFEuler)
     vals.push(0, 0, 0)
 
@@ -1069,13 +1078,13 @@ function buildMotion(frames, frameTime, off, captureFps, boneLengths = null, mod
 // ── Public ────────────────────────────────────────────────────────────────────
 // clipName: optional snake_case filename (without extension). If provided, the
 // downloaded file is named after it instead of the default "pose_sequence".
-export function exportBVH(frames, { captureFps = 30, clipName = null, boneLengths = null, modelQuality = 'full' } = {}) {
+export function exportBVH(frames, { captureFps = 30, clipName = null, boneLengths = null, modelQuality = 'full', keepFeetPlanted = true, strictAnatomy = false } = {}) {
   if (!frames?.length) return
   console.log(`[BVH] Exporting ${frames.length} frames at ${captureFps} FPS`)
   resetBoneLengthCache()
   resetFootFloor()
   const off      = getRestOffsets()
-  const bvh      = buildHierarchy(off) + '\n' + buildMotion(frames, 1 / captureFps, off, captureFps, boneLengths, modelQuality)
+  const bvh      = buildHierarchy(off) + '\n' + buildMotion(frames, 1 / captureFps, off, captureFps, boneLengths, modelQuality, { keepFeetPlanted, strictAnatomy })
   const blob     = new Blob([bvh], { type: 'text/plain' })
   const url      = URL.createObjectURL(blob)
   const a        = document.createElement('a')
