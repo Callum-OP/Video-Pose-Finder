@@ -117,7 +117,8 @@ export const BONES = [
 // `root`    move translates the whole figure instead of a single joint.
 export const EDIT_TARGETS = [
   { key: 'head',     label: 'Head',       rotate: [MP.nose, MP.earL, MP.earR], move: false },
-  { key: 'chest',    label: 'Chest',      rotate: upperBody(),                 move: false },
+  { key: 'neck',     label: 'Neck',       rotate: [MP.nose, MP.earL, MP.earR], move: false },
+  { key: 'chest',    label: 'Chest / torso', rotate: upperBody(),              move: true },
   { key: MP.shoL,    label: 'L shoulder', rotate: [MP.elbL, MP.wriL],          move: true },
   { key: MP.elbL,    label: 'L elbow',    rotate: [MP.wriL],                   move: true },
   { key: MP.wriL,    label: 'L wrist',    rotate: [],                          move: true },
@@ -163,6 +164,11 @@ export function moveJoint(pos, target, newScenePos) {
     for (const idx of TRACKED_MP) pos[idx] = add(pos[idx], delta);
   } else if (typeof target.key === 'number') {
     pos[target.key] = newScenePos.slice();
+  } else if (Array.isArray(target.rotate) && target.rotate.length) {
+    // Derived group joint (e.g. chest): translate the whole group so the torso
+    // leans/bends rather than moving a single point.
+    const delta = sub(newScenePos, pos[target.key]);
+    for (const idx of target.rotate) if (pos[idx]) pos[idx] = add(pos[idx], delta);
   }
   return refreshDerived(pos);
 }

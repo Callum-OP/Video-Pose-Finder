@@ -116,11 +116,17 @@ export class PoseEditorScene {
     this.scene.add(this.rigGroup);
     this._loadRig(modelUrls);
 
-    // ── Picking ────────────────────────────────────────────────────────────
+    // ── Picking + direct joint dragging ────────────────────────────────────
     this.raycaster = new THREE.Raycaster();
     this._pointer = new THREE.Vector2();
-    this._onPointerDown = (e) => this._pick(e);
-    this.renderer.domElement.addEventListener('pointerdown', this._onPointerDown);
+    this._dragPlane = new THREE.Plane();
+    this._directDrag = null;   // active free-drag of a joint dot
+    this._onDown = (e) => this._handleDown(e);
+    this._onMove = (e) => this._handleMove(e);
+    this._onUp   = (e) => this._handleUp(e);
+    this.renderer.domElement.addEventListener('pointerdown', this._onDown);
+    this.renderer.domElement.addEventListener('pointermove', this._onMove);
+    window.addEventListener('pointerup', this._onUp);
 
     this._onResize = () => this.resize();
     window.addEventListener('resize', this._onResize);
@@ -224,7 +230,9 @@ export class PoseEditorScene {
   dispose() {
     cancelAnimationFrame(this._raf);
     window.removeEventListener('resize', this._onResize);
-    this.renderer.domElement.removeEventListener('pointerdown', this._onPointerDown);
+    this.renderer.domElement.removeEventListener('pointerdown', this._onDown);
+    this.renderer.domElement.removeEventListener('pointermove', this._onMove);
+    window.removeEventListener('pointerup', this._onUp);
     // NB: three r169's TransformControls.dispose() calls this.traverse() but the
     // control is no longer an Object3D, so it throws. Tear it down manually: drop
     // DOM listeners (disconnect) and dispose/remove its helper object instead.
@@ -310,28 +318,84 @@ export class PoseEditorScene {
     }
   }
 
-  _pick(e) {
-    if (this.transform.dragging) return;
+  _setPointer(e) {
     const rect = this.renderer.domElement.getBoundingClientRect();
     this._pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     this._pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
     this.raycaster.setFromCamera(this._pointer, this.camera);
+  }
+
+  _raycastJoint(e) {
+    this._setPointer(e);
     const hits = this.raycaster.intersectObjects([...this._jointMeshes.values()], false);
-    if (hits.length) this.select(hits[0].object.userData.targetKey);
+    return hits.length ? hits[0].object.userData.targetKey : null;
+  }
+
+  _handleDown(e) {
+    if (this.transform.dragging) return;        // let the rotate gizmo handle its own drags
+    const key = this._raycastJoint(e);
+    if (!key) return;
+    this.select(key);
+    // Move tool: grab the dot and drag it freely (any screen direction).
+    if (this.tool === 'move') {
+      const target = EDIT_TARGET_BY_KEY[key];
+      if (target && (target.move || target.root)) this._beginDirectDrag(e, target);
+    }
+  }
+
+  _handleMove(e) {
+    const d = this._directDrag;
+    if (!d) return;
+    this._setPointer(e);
+    const hit = new THREE.Vector3();
+    if (!this.raycaster.ray.intersectPlane(this._dragPlane, hit)) return;
+    hit.add(d.offset);
+    for (const k in d.snapshot) this.pos[k] = d.snapshot[k].slice();
+    moveJoint(this.pos, d.target, [hit.x, hit.y, hit.z]);
+    d.moved = true;
+    this._update();
+  }
+
+  _handleUp() {
+    if (!this._directDrag) return;
+    const moved = this._directDrag.moved;
+    this._directDrag = null;
+    this.orbit.enabled = true;
+    if (moved && this.pos) this.onEdit(this.pos);   // skip no-op edits on a plain click
+  }
+
+  // Begin a free drag: move the joint in the screen-parallel plane through it.
+  _beginDirectDrag(e, target) {
+    const jp = this.pos[target.key];
+    if (!jp) return;
+    const jointPos = new THREE.Vector3(jp[0], jp[1], jp[2]);
+    const n = this.camera.getWorldDirection(new THREE.Vector3());
+    this._dragPlane.setFromNormalAndCoplanarPoint(n, jointPos);
+    this._setPointer(e);
+    const hit0 = new THREE.Vector3();
+    const offset = this.raycaster.ray.intersectPlane(this._dragPlane, hit0)
+      ? jointPos.clone().sub(hit0) : new THREE.Vector3();
+    const snapshot = {};
+    for (const k of [...TRACKED_MP, 'hips', 'spine', 'chest', 'neck', 'head']) {
+      if (this.pos[k]) snapshot[k] = this.pos[k].slice();
+    }
+    this._directDrag = { target, offset, snapshot };
+    this.orbit.enabled = false;
+    try { this.renderer.domElement.setPointerCapture(e.pointerId); } catch { /* unsupported */ }
   }
 
   _refreshGizmoForSelection() {
     const key = this.selectedKey;
-    if (!key) { this.transform.detach(); return; }
-    const target = EDIT_TARGET_BY_KEY[key];
-    if (!target) { this.transform.detach(); return; }
-    // Rotate tool needs a non-empty subtree (wrists/feet have none → fall back to move).
-    const canRotate = this.tool === 'rotate' && target.rotate.length > 0;
-    const mode = (this.tool === 'move' || !canRotate) ? 'translate' : 'rotate';
-    if (mode === 'translate' && !target.move && !target.root) { this.transform.detach(); return; }
-    this._placeGizmo();
-    this.transform.setMode(mode);
-    this.transform.attach(this.gizmoPivot);
+    const target = key ? EDIT_TARGET_BY_KEY[key] : null;
+    // Rotate tool shows the gizmo on joints that have something to rotate. Move tool
+    // uses direct dot-dragging instead, so no gizmo there.
+    if (target && this.tool === 'rotate' && target.rotate.length > 0) {
+      this._placeGizmo();
+      this.transform.setMode('rotate');
+      this.transform.attach(this.gizmoPivot);
+    } else {
+      this.transform.detach();
+    }
   }
 
   _placeGizmo() {

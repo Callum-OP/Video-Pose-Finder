@@ -139,9 +139,10 @@ export default function PoseEditor3D({ frames, startIndex = 0, onClose, onApplyE
           {selLabel ? <>Selected: <b>{selLabel}</b></> : 'Click a joint to select'}
         </div>
         <div style={s.hint}>
-          Drag to orbit · scroll to zoom · right-drag to pan. Select a joint, then use the gizmo to{' '}
-          {tool === 'rotate' ? 'rotate the limb (bone lengths preserved — exact on export).'
-                             : 'move the joint (may be re-constrained on export; rotate is exact).'}
+          Drag to orbit · scroll to zoom · right-drag to pan.{' '}
+          {tool === 'rotate'
+            ? 'Select a joint and use the gizmo rings to rotate the limb — drag inside the rings for free/diagonal rotation. Bone lengths preserved (exact on export).'
+            : 'Drag any joint dot in any direction to move it. (Move may be re-constrained on export; rotate is exact.)'}
           {' '}Feet planting/grounding is applied at export.
         </div>
       </div>

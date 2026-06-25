@@ -54,12 +54,13 @@ const ORDER = [
   'RightUpLeg', 'RightLeg', 'RightFoot',
 ];
 
-// The control skeleton has no independent spine/neck articulation (spine, chest, etc.
-// are derived linearly from hips + shoulders), so the torso is rigid. Orient these
-// bones by the full torso rotation A (like the hips) rather than by a single
-// direction — a direction leaves the bone's roll about its axis undetermined, which
-// fed the shoulders a twisted chest frame and mangled the arms.
+// Torso bones. MediaPipe gives only hips + shoulders (no mid-spine), so we orient
+// the pelvis from the hip line and the chest from the shoulder line, then SLERP that
+// difference across the spine sections (fraction below) so the torso twists/leans
+// through three sections instead of moving as one rigid block. Neck/Head ride the
+// chest (fraction 1).
 const TORSO = new Set(['Spine', 'Spine1', 'Spine2', 'Neck', 'Head']);
+const TORSO_FRACTION = { Spine: 0.34, Spine1: 0.67, Spine2: 1, Neck: 1, Head: 1 };
 
 // Upper-arm bones get a roll correction: a T-pose arm (pointing sideways at bind)
 // swung down to its target picks an arbitrary roll, twisting the skinned mesh. We
@@ -107,25 +108,33 @@ export function buildRigBindData(root) {
   const bind = {};
   for (const name of ORDER) {
     const bone = get(name);
-    const child = get(CHILD[name]);
-    if (!bone || !child) continue;
+    if (!bone) continue;
     const boneWorldQ = wq(name);
-    const childDirWorld = child.getWorldPosition(new THREE.Vector3())
-      .sub(bone.getWorldPosition(new THREE.Vector3())).normalize();
     const parentWorldQ = bone.parent?.getWorldQuaternion(new THREE.Quaternion()) ?? new THREE.Quaternion();
-    const localChildAxis = childDirWorld.clone().applyQuaternion(boneWorldQ.clone().invert());
-    // A deterministic local axis perpendicular to the bone, used as the roll
-    // reference for bend-plane correction.
-    let up = new THREE.Vector3(0, 1, 0);
-    if (Math.abs(localChildAxis.dot(up)) > 0.9) up.set(0, 0, 1);
-    const localSide = new THREE.Vector3().crossVectors(localChildAxis, up).normalize();
-    bind[name] = {
+    const entry = {
       bone,
       parentName: normName(bone.parent?.name),
+      bindWorldQuat: boneWorldQ.clone(),
       bindLocal: parentWorldQ.clone().invert().multiply(boneWorldQ),
-      localChildAxis,
-      localSide,
+      localChildAxis: null,
+      localSide: null,
     };
+    // The child defines the bone's forward axis for the swing solve. Torso bones
+    // are oriented by bind quaternion and don't need it; a missing child (e.g. a
+    // non-Mixamo head tip name) just means that bone follows its parent.
+    const child = get(CHILD[name]);
+    if (child) {
+      const childDirWorld = child.getWorldPosition(new THREE.Vector3())
+        .sub(bone.getWorldPosition(new THREE.Vector3())).normalize();
+      const localChildAxis = childDirWorld.clone().applyQuaternion(boneWorldQ.clone().invert());
+      // A deterministic local axis perpendicular to the bone, used as the roll
+      // reference for bend-plane correction.
+      let up = new THREE.Vector3(0, 1, 0);
+      if (Math.abs(localChildAxis.dot(up)) > 0.9) up.set(0, 0, 1);
+      entry.localChildAxis = localChildAxis;
+      entry.localSide = new THREE.Vector3().crossVectors(localChildAxis, up).normalize();
+    }
+    bind[name] = entry;
   }
 
   // Pose-invariant height proxy (torso + one leg) for auto-scaling the rig to the
@@ -152,19 +161,33 @@ export function poseRig(rigData, pos) {
   if (!rigData) return;
   const { bind, rigBasis, hipsBindQuat, hipsParentBindQuat, hipsBone } = rigData;
 
-  // Control-space torso basis for this frame.
+  // Two torso orientations: pelvis from the hip line, chest from the shoulder line
+  // (both share the hips→shoulders up). Their difference is the torso twist/lean,
+  // which we distribute across the spine sections. Each maps the rig's bind torso
+  // basis onto the control orientation, so both include full body facing.
   const up = v3(pos.chest).sub(v3(pos.hips));
-  const right = v3(pos[MP.shoL]).sub(v3(pos[MP.shoR]));
-  const ctrlBasis = torsoBasis(up, right);
+  const rbInv = rigBasis.clone().invert();
+  const pelvisBasis = torsoBasis(up, v3(pos[MP.hipL]).sub(v3(pos[MP.hipR])));
+  const chestBasis  = torsoBasis(up, v3(pos[MP.shoL]).sub(v3(pos[MP.shoR])));
+  const Apelvis = new THREE.Quaternion().setFromRotationMatrix(
+    new THREE.Matrix4().multiplyMatrices(pelvisBasis, rbInv));
+  const Achest = new THREE.Quaternion().setFromRotationMatrix(
+    new THREE.Matrix4().multiplyMatrices(chestBasis, rbInv));
 
-  // A maps rig bind directions into the current control orientation — INCLUDING
-  // full body facing — so the whole character turns / leans / lies to match the
-  // captured pose (not just the limbs). A = ctrlBasis · rigBasis⁻¹.
-  const A = new THREE.Matrix4().multiplyMatrices(ctrlBasis, rigBasis.clone().invert());
-  const Aq = new THREE.Quaternion().setFromRotationMatrix(A);
+  // Head orientation from the face points (ear line + neck→head up) so rotating the
+  // head/neck control actually turns the rig head. Falls back to the chest when the
+  // face frame is degenerate (missing/edge-on ears).
+  let Ahead = Achest;
+  const earSpan = v3(pos[MP.earL]).sub(v3(pos[MP.earR]));
+  const headUp = v3(pos.head).sub(v3(pos.neck));
+  if (earSpan.lengthSq() > 1e-6 && headUp.lengthSq() > 1e-6) {
+    const headBasis = torsoBasis(headUp, earSpan);
+    Ahead = new THREE.Quaternion().setFromRotationMatrix(
+      new THREE.Matrix4().multiplyMatrices(headBasis, rbInv));
+  }
 
-  // Orient the pelvis (and thus the whole body) to the control torso.
-  const hipsWorld = Aq.clone().multiply(hipsBindQuat);
+  // Orient the pelvis to the hip line (turns the whole body to face the pose).
+  const hipsWorld = Apelvis.clone().multiply(hipsBindQuat);
   if (hipsBone) {
     hipsBone.quaternion.copy(hipsParentBindQuat.clone().invert().multiply(hipsWorld));
   }
@@ -182,20 +205,29 @@ export function poseRig(rigData, pos) {
     // between shoulder and arm — which would otherwise break the parent chain and
     // fling the arms. getWorldQuaternion() updates the parent's world matrix first.
     const parentWorld = b.bone.parent.getWorldQuaternion(new THREE.Quaternion());
-    // Where the bone would sit if it kept its bind pose under the posed parent.
-    const restWorld = parentWorld.clone().multiply(b.bindLocal);
 
     let desiredWorld;
     if (TORSO.has(name)) {
-      // Rigid torso — inherit the parent (and thus the A-oriented hips) unchanged.
-      desiredWorld = restWorld;
+      // Spine sections interpolate pelvis→chest so the torso bends/twists through
+      // three sections; the neck blends chest→head and the head takes the face
+      // orientation, so head/neck edits actually turn the rig head.
+      let A;
+      if (name === 'Head') A = Ahead;
+      else if (name === 'Neck') A = Achest.clone().slerp(Ahead, 0.5);
+      else A = Apelvis.clone().slerp(Achest, TORSO_FRACTION[name] ?? 1);
+      desiredWorld = A.clone().multiply(b.bindWorldQuat);
     } else {
+      // Where the bone would sit if it kept its bind pose under the posed parent.
+      const restWorld = parentWorld.clone().multiply(b.bindLocal);
       const seg = SEGMENTS[name];
-      if (!seg) continue;
-      tmpFrom.copy(v3(pos[seg[0]]));
-      tmpTo.copy(v3(pos[seg[1]]));
+      tmpFrom.copy(v3(pos[seg?.[0]] ?? [0, 0, 0]));
+      tmpTo.copy(v3(pos[seg?.[1]] ?? [0, 0, 0]));
       const targetDir = tmpTo.sub(tmpFrom);
-      if (targetDir.lengthSq() < 1e-8) continue;
+      // A bone with no usable child/target just follows its parent at rest.
+      if (!seg || !b.localChildAxis || targetDir.lengthSq() < 1e-8) {
+        b.bone.quaternion.copy(parentWorld.clone().invert().multiply(restWorld));
+        continue;
+      }
       targetDir.normalize();
 
       // Swing ONLY: rotate the bone's current child-direction onto the target,
