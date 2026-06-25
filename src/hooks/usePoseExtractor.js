@@ -54,6 +54,7 @@ export const DEFAULT_SETTINGS = {
   // ── Export-time options (read at BVH export, applied without reprocessing) ──
   keepFeetPlanted:     true,   // Ground the feet to a stable floor. Off = feet follow raw motion (better for aerial/action).
   strictAnatomy:       false,  // Tighten joint limits (foot roll/twist, wrist flex) so limbs stay more rigid/neutral.
+  preserveFacing:      true,   // Root carries the body's turning/facing. Off = facing stabilised (root yaw locked).
 }
 
 export const PERSON_COLORS = ['#7c6cff', '#39e8a0', '#f5a623', '#ff4d6d']
@@ -305,6 +306,15 @@ function loadSavedResult() {
   return null
 }
 
+// Deep-clone just the editable pose arrays of a frame. Used to keep an immutable
+// "originally-captured" copy of each frame for the 3D editor's per-frame Reset.
+function cloneFrameData(frame) {
+  return {
+    landmarks:      frame.landmarks ? frame.landmarks.map((lm) => ({ ...lm })) : frame.landmarks,
+    worldLandmarks: frame.worldLandmarks ? frame.worldLandmarks.map((lm) => ({ ...lm })) : null,
+  }
+}
+
 // Main Public Hook
 export function usePoseExtractor() {
   const landmarkerRef     = useRef(null)
@@ -337,6 +347,17 @@ export function usePoseExtractor() {
   // useRef has no lazy initialiser, so guard with `undefined` to read storage once.
   const restoredRef = useRef(undefined)
   if (restoredRef.current === undefined) restoredRef.current = loadSavedResult()
+
+  // Immutable "as-captured" copy of each frame's pose, aligned with the `frames`
+  // array, so the 3D editor can reset a single frame. Seeded from the restored
+  // result (falling back to the frames themselves for older saves) and refreshed
+  // whenever a fresh run produces new frames.
+  const originalFramesRef = useRef(undefined)
+  if (originalFramesRef.current === undefined) {
+    const r = restoredRef.current
+    const src = r?.originalFrames ?? r?.frames ?? []
+    originalFramesRef.current = src.map(cloneFrameData)
+  }
 
   const [status, setStatus]           = useState(() => restoredRef.current ? 'done' : 'idle')
   const [progress, setProgress]       = useState(0)
@@ -395,7 +416,9 @@ export function usePoseExtractor() {
   useEffect(() => {
     if (status !== 'done' || frames.length === 0) return
     try {
-      localStorage.setItem(RESULT_STORAGE_KEY, JSON.stringify({ frames, stats, savedAt: Date.now() }))
+      localStorage.setItem(RESULT_STORAGE_KEY, JSON.stringify({
+        frames, stats, originalFrames: originalFramesRef.current, savedAt: Date.now(),
+      }))
     } catch (e) {
       // Quota exceeded or non-serialisable — non-fatal, just skip persisting.
       console.warn('[PoseFinder] Could not save last result to localStorage:', e)
@@ -405,11 +428,32 @@ export function usePoseExtractor() {
   // Clear the displayed result and the saved copy (the "clear" action).
   const clearResults = useCallback(() => {
     try { localStorage.removeItem(RESULT_STORAGE_KEY) } catch { /* ignore */ }
+    originalFramesRef.current = []
     setFrames([])
     setStats(null)
     setError(null)
     setProgress(0)
     setStatus('idle')
+  }, [])
+
+  // ── 3D pose editor hooks ────────────────────────────────────────────────────
+  // Commit an edited pose for a single frame (immutable update). The persistence
+  // effect re-saves automatically because `frames` changes while status is 'done'.
+  const applyFrameEdit = useCallback((frameIndex, { landmarks, worldLandmarks }) => {
+    setFrames((prev) => prev.map((f, i) => (
+      i === frameIndex ? { ...f, landmarks, worldLandmarks } : f
+    )))
+  }, [])
+
+  // Restore a single frame to its originally-captured pose.
+  const resetFrame = useCallback((frameIndex) => {
+    const orig = originalFramesRef.current?.[frameIndex]
+    if (!orig) return
+    setFrames((prev) => prev.map((f, i) => (
+      i === frameIndex
+        ? { ...f, ...cloneFrameData(orig) }
+        : f
+    )))
   }, [])
 
   const cancelProcessing = useCallback(() => {
@@ -722,6 +766,7 @@ export function usePoseExtractor() {
       handData,
     }]
 
+    originalFramesRef.current = singleFrame.map(cloneFrameData)
     setFrames(singleFrame)
     setStats({
       frameCount:    1,
@@ -956,6 +1001,7 @@ export function usePoseExtractor() {
     // How many final frames carry MediaPipe hand/finger data, for the stats panel.
     const handDataFrames = finalFrames.filter(f => f.handData).length
 
+    originalFramesRef.current = finalFrames.map(cloneFrameData)
     setFrames(finalFrames)
     setStats({
       frameCount:    finalFrames.length,
@@ -981,6 +1027,8 @@ export function usePoseExtractor() {
     processVideo,
     cancelProcessing,
     clearResults,
+    applyFrameEdit,
+    resetFrame,
     status,
     progress,
     frames,
