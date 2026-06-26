@@ -42,3 +42,5 @@ service-account.json
 # Models
 public/models/
 backend/
+# Reference media (local only)
+references/
