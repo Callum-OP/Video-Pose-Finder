@@ -7,7 +7,7 @@ import {
   MP, BONES, EDIT_TARGETS, EDIT_TARGET_BY_KEY, TRACKED_MP,
   rotateSubtree, moveJoint,
 } from '../utils/poseEditMath';
-import { buildRigBindData, poseRig } from '../utils/retargetRig';
+import { buildRigBindData, poseRig, poseFingers } from '../utils/retargetRig';
 
 // Default character candidates, tried in order — drop a Mixamo-rigged character.fbx
 // in public/models to use your own; the bundled Xbot.glb is the fallback. Paths are
@@ -192,8 +192,9 @@ export class PoseEditorScene {
   }
 
   // ── Public API ────────────────────────────────────────────────────────────
-  setPose(pos) {
+  setPose(pos, handData = null) {
     this.pos = pos;
+    this.handData = handData;
     if (this.selectedKey) this._placeGizmo();
     this._update();
     if (!this._framed) { this._frameCamera(); this._framed = true; }
@@ -307,6 +308,7 @@ export class PoseEditorScene {
     if (this.rigGroup.visible && this.rigData) {
       this._ensureRigScale();
       poseRig(this.rigData, pos);
+      poseFingers(this.rigData, this.handData);
       // Co-locate the rig's hips with the control hips (rig is uniformly scaled).
       const s = this._rigScale ?? 1;
       const hb = this.rigData.hipsBindPos;

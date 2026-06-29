@@ -153,7 +153,68 @@ export function buildRigBindData(root) {
     hipsBindQuat: wq('Hips'),
     hipsParentBindQuat: hipsBone.parent?.getWorldQuaternion(new THREE.Quaternion()) ?? new THREE.Quaternion(),
     bindProxy: bindProxy || 1,
+    fingers: { left: buildHandBind(get, 'Left'), right: buildHandBind(get, 'Right') },
   };
+}
+
+// ── Finger driving ────────────────────────────────────────────────────────────
+// Each finger is a 3-bone chain (knuckle → mid → tip) that curls about a single
+// hinge — the axis across the knuckles. The captured `fingerAngles` (degrees of
+// flexion per joint) drive the bend; the export already uses the same angles.
+const FINGERS = {
+  Thumb:  { bones: ['HandThumb1', 'HandThumb2', 'HandThumb3'],  keys: ['mcp', 'ip', 'ip'],   scale: [1, 1, 0.4] },
+  Index:  { bones: ['HandIndex1', 'HandIndex2', 'HandIndex3'],  keys: ['mcp', 'pip', 'dip'] },
+  Middle: { bones: ['HandMiddle1', 'HandMiddle2', 'HandMiddle3'], keys: ['mcp', 'pip', 'dip'] },
+  Ring:   { bones: ['HandRing1', 'HandRing2', 'HandRing3'],     keys: ['mcp', 'pip', 'dip'] },
+  Pinky:  { bones: ['HandPinky1', 'HandPinky2', 'HandPinky3'],  keys: ['mcp', 'pip', 'dip'] },
+};
+// Sign of the bend about the knuckle axis (flexion curls fingers toward the palm).
+const FINGER_SIGN = -1;
+
+function buildHandBind(get, side) {
+  const idx = get(side + 'HandIndex1');
+  const pinky = get(side + 'HandPinky1');
+  if (!idx || !pinky) return null;
+  const wpos = (b) => b.getWorldPosition(new THREE.Vector3());
+  const knuckleAxis = wpos(pinky).sub(wpos(idx)).normalize();   // world curl axis
+  const out = {};
+  for (const [finger, def] of Object.entries(FINGERS)) {
+    const chain = [];
+    for (let i = 0; i < def.bones.length; i++) {
+      const bone = get(side + def.bones[i]);
+      if (!bone) break;
+      const parentWorld = bone.parent.getWorldQuaternion(new THREE.Quaternion());
+      const boneWorld = bone.getWorldQuaternion(new THREE.Quaternion());
+      chain.push({
+        bone,
+        bindLocal: parentWorld.clone().invert().multiply(boneWorld),
+        hinge: knuckleAxis.clone().applyQuaternion(parentWorld.clone().invert()), // into parent-local
+        key: def.keys[i],
+        scale: def.scale?.[i] ?? 1,
+      });
+    }
+    if (chain.length) out[finger.toLowerCase()] = chain;
+  }
+  return out;
+}
+
+// Pose the rig fingers from a frame's handData.{left,right}.fingerAngles.
+export function poseFingers(rigData, handData) {
+  if (!rigData?.fingers || !handData) return;
+  for (const side of ['left', 'right']) {
+    const hand = rigData.fingers[side];
+    const angles = handData[side]?.fingerAngles;
+    if (!hand || !angles) continue;
+    for (const finger in hand) {
+      const fa = angles[finger];
+      if (!fa) continue;
+      for (const j of hand[finger]) {
+        const deg = Math.max(0, Math.min(90, (fa[j.key] ?? 0) * j.scale));
+        const rot = new THREE.Quaternion().setFromAxisAngle(j.hinge, FINGER_SIGN * deg * Math.PI / 180);
+        j.bone.quaternion.copy(rot.multiply(j.bindLocal));   // bend in the parent frame
+      }
+    }
+  }
 }
 
 // Pose the rig for one frame from control positions (string/number keyed scene vecs).

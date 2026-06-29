@@ -1,6 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { PoseEditorScene } from './PoseEditorScene'
 import { buildControlPositions, writeBackFrame, EDIT_TARGET_BY_KEY } from '../utils/poseEditMath'
+
+// How many recent pose changes the editor's undo history keeps.
+const MAX_UNDO = 30
 
 // ── Full-screen 3D pose editor ────────────────────────────────────────────────
 // Shows the captured pose on a rigged humanoid (or a capsule mannequin fallback),
@@ -58,6 +61,52 @@ export default function PoseEditor3D({ frames, startIndex = 0, onClose, onApplyE
   frameIdxRef.current = frameIdx
   framesRef.current = frames
 
+  // ── Undo / redo history (per editor session) ──────────────────────────────
+  // Each committed change (a drag, a rotate, a reset) pushes the frame's previous
+  // pose so it can be restored. Capped at MAX_UNDO recent changes.
+  const historyRef = useRef({ past: [], future: [] })
+  const [hist, setHist] = useState({ past: 0, future: 0 })
+
+  // Snapshot a frame's current pose (immutable arrays — cheap to keep).
+  const snap = useCallback((i) => {
+    const f = framesRef.current[i]
+    return f ? { frameIndex: i, landmarks: f.landmarks, worldLandmarks: f.worldLandmarks } : null
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Record the pre-change state of frame i (call right before applying a change).
+  const recordHistory = useCallback((i) => {
+    const s0 = snap(i)
+    if (!s0) return
+    const h = historyRef.current
+    h.past.push(s0)
+    if (h.past.length > MAX_UNDO) h.past.shift()
+    h.future = []
+    setHist({ past: h.past.length, future: 0 })
+  }, [snap])
+
+  const undo = useCallback(() => {
+    const h = historyRef.current
+    if (!h.past.length) return
+    const entry = h.past.pop()
+    const cur = snap(entry.frameIndex)
+    if (cur) h.future.push(cur)
+    onApplyEdit(entry.frameIndex, { landmarks: entry.landmarks, worldLandmarks: entry.worldLandmarks })
+    setFrameIdx(entry.frameIndex)
+    setHist({ past: h.past.length, future: h.future.length })
+  }, [snap, onApplyEdit])
+
+  const redo = useCallback(() => {
+    const h = historyRef.current
+    if (!h.future.length) return
+    const entry = h.future.pop()
+    const cur = snap(entry.frameIndex)
+    if (cur) { h.past.push(cur); if (h.past.length > MAX_UNDO) h.past.shift() }
+    onApplyEdit(entry.frameIndex, { landmarks: entry.landmarks, worldLandmarks: entry.worldLandmarks })
+    setFrameIdx(entry.frameIndex)
+    setHist({ past: h.past.length, future: h.future.length })
+  }, [snap, onApplyEdit])
+
   // Create the scene once.
   useEffect(() => {
     const scene = new PoseEditorScene(containerRef.current, {
@@ -65,6 +114,7 @@ export default function PoseEditor3D({ frames, startIndex = 0, onClose, onApplyE
         const i = frameIdxRef.current
         const frame = framesRef.current[i]
         if (!frame) return
+        recordHistory(i)
         onApplyEdit(i, writeBackFrame(frame, pos))
       },
       onSelect: (key) => setSelected(key),
@@ -79,15 +129,19 @@ export default function PoseEditor3D({ frames, startIndex = 0, onClose, onApplyE
     const scene = sceneRef.current
     const frame = frames[frameIdx]
     if (!scene || !frame) return
-    scene.setPose(buildControlPositions(frame))
+    scene.setPose(buildControlPositions(frame), frame.handData)
   }, [frameIdx, frames])
 
   useEffect(() => { sceneRef.current?.setTool(tool) }, [tool])
   useEffect(() => { sceneRef.current?.setShowMesh(showMesh) }, [showMesh])
 
-  // Keyboard: arrows cycle frames, Esc closes.
+  // Keyboard: Ctrl+Z undo, Ctrl+Y / Ctrl+Shift+Z redo, arrows cycle frames, Esc closes.
   useEffect(() => {
     const onKey = (e) => {
+      const mod = e.ctrlKey || e.metaKey
+      const k = e.key.toLowerCase()
+      if (mod && k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); return }
+      if (mod && (k === 'y' || (k === 'z' && e.shiftKey))) { e.preventDefault(); redo(); return }
       if (e.key === 'Escape') onClose()
       else if (e.key === 'ArrowRight') step(1)
       else if (e.key === 'ArrowLeft') step(-1)
@@ -95,7 +149,7 @@ export default function PoseEditor3D({ frames, startIndex = 0, onClose, onApplyE
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [frames.length])
+  }, [frames.length, undo, redo])
 
   function step(d) {
     setFrameIdx((i) => Math.max(0, Math.min(frames.length - 1, i + d)))
@@ -124,7 +178,23 @@ export default function PoseEditor3D({ frames, startIndex = 0, onClose, onApplyE
 
         <button
           className="btn btn--ghost"
-          onClick={() => { onResetFrame(frameIdx); setSelected(null); sceneRef.current?.select(null) }}
+          onClick={undo}
+          disabled={hist.past === 0}
+          title="Undo (Ctrl+Z)"
+        >
+          ↶ Undo
+        </button>
+        <button
+          className="btn btn--ghost"
+          onClick={redo}
+          disabled={hist.future === 0}
+          title="Redo (Ctrl+Y)"
+        >
+          ↷ Redo
+        </button>
+        <button
+          className="btn btn--ghost"
+          onClick={() => { recordHistory(frameIdx); onResetFrame(frameIdx); setSelected(null); sceneRef.current?.select(null) }}
           title="Restore this frame to its originally-captured pose"
         >
           ↺ Reset frame

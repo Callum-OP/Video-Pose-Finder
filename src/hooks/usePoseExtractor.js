@@ -306,12 +306,13 @@ function loadSavedResult() {
   return null
 }
 
-// Deep-clone just the editable pose arrays of a frame. Used to keep an immutable
-// "originally-captured" copy of each frame for the 3D editor's per-frame Reset.
+// Deep-clone just the editable pose data of a frame (landmarks + hand/finger data).
+// Used to keep an immutable "originally-captured" copy for the 3D editor's Reset.
 function cloneFrameData(frame) {
   return {
     landmarks:      frame.landmarks ? frame.landmarks.map((lm) => ({ ...lm })) : frame.landmarks,
     worldLandmarks: frame.worldLandmarks ? frame.worldLandmarks.map((lm) => ({ ...lm })) : null,
+    handData:       frame.handData ? structuredClone(frame.handData) : null,
   }
 }
 
@@ -437,11 +438,12 @@ export function usePoseExtractor() {
   }, [])
 
   // ── 3D pose editor hooks ────────────────────────────────────────────────────
-  // Commit an edited pose for a single frame (immutable update). The persistence
+  // Commit an edited pose for a single frame (immutable update). `patch` may carry
+  // any editable frame fields (landmarks, worldLandmarks, handData). The persistence
   // effect re-saves automatically because `frames` changes while status is 'done'.
-  const applyFrameEdit = useCallback((frameIndex, { landmarks, worldLandmarks }) => {
+  const applyFrameEdit = useCallback((frameIndex, patch) => {
     setFrames((prev) => prev.map((f, i) => (
-      i === frameIndex ? { ...f, landmarks, worldLandmarks } : f
+      i === frameIndex ? { ...f, ...patch } : f
     )))
   }, [])
 
