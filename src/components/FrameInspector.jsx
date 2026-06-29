@@ -76,7 +76,7 @@ const s = {
   }),
 }
 
-export default function FrameInspector({ frames, stats }) {
+export default function FrameInspector({ frames, stats, onEdit }) {
   const [frameIdx, setFrameIdx] = useState(0)
 
   if (!frames.length) return null
@@ -93,6 +93,15 @@ export default function FrameInspector({ frames, stats }) {
       <div style={s.left}>
         <span style={s.label}>skeleton preview</span>
         <SkeletonCanvas landmarks={frame.landmarks} width={320} height={320} />
+        {onEdit && (
+          <button
+            className="btn btn--accent"
+            style={{ marginTop: 10, width: '100%' }}
+            onClick={() => onEdit(frameIdx)}
+          >
+            ✎ Edit in 3D
+          </button>
+        )}
       </div>
 
       <div style={s.right}>

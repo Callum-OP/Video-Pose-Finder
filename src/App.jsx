@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { usePoseExtractor, DEFAULT_SETTINGS } from './hooks/usePoseExtractor'
 import FrameInspector from './components/FrameInspector'
 import PersonSelector from './components/PersonSelector'
+import PoseEditor3D from './components/PoseEditor3D'
 import { exportBVH } from './utils/exportBVH'
 import './App.css'
 
@@ -49,6 +50,7 @@ function Switch({ checked, disabled, onChange }) {
 export default function App() {
   const {
     preScan, processImage, processVideo, cancelProcessing, clearResults,
+    applyFrameEdit, resetFrame,
     status, progress,
     frames, scanFrames,
     stats, error,
@@ -59,6 +61,7 @@ export default function App() {
   const [settings, setSettings] = useState(DEFAULT_SETTINGS)
   const [lastFile, setLastFile] = useState(null)
   const [showModal, setShowModal] = useState(false)
+  const [editingFrame, setEditingFrame] = useState(null)
 
   const pendingFileRef = useRef(null)
   const inputRef = useRef(null)
@@ -308,6 +311,21 @@ export default function App() {
               />
             </div>
           </div>
+
+          <div className="option-row">
+            <div className="option-row__text">
+              <span className="option-row__label">Preserve turning (body facing)</span>
+              <span className="option-row__hint">
+                Lets the root rotate so the character turns to face the way the subject does. Turn off to stabilise facing (root yaw locked).
+              </span>
+            </div>
+            <div className="option-row__control">
+              <Switch
+                checked={settings.preserveFacing}
+                onChange={(e) => setSetting('preserveFacing', e.target.checked)}
+              />
+            </div>
+          </div>
         </details>
       </div>
 
@@ -412,6 +430,7 @@ export default function App() {
                   modelQuality:    stats.modelQuality,
                   keepFeetPlanted: settings.keepFeetPlanted,
                   strictAnatomy:   settings.strictAnatomy,
+                  preserveFacing:  settings.preserveFacing,
                 })}
               >
                 ↓ Export BVH
@@ -429,9 +448,20 @@ export default function App() {
             </div>
           </div>
           <div className="inspector-card">
-            <FrameInspector frames={frames} stats={stats} />
+            <FrameInspector frames={frames} stats={stats} onEdit={setEditingFrame} />
           </div>
         </>
+      )}
+
+      {/* Full-screen 3D pose editor */}
+      {editingFrame !== null && frames.length > 0 && (
+        <PoseEditor3D
+          frames={frames}
+          startIndex={editingFrame}
+          onApplyEdit={applyFrameEdit}
+          onResetFrame={resetFrame}
+          onClose={() => setEditingFrame(null)}
+        />
       )}
 
     </div>

@@ -818,7 +818,7 @@ function groundSkeleton(poses, boneLengths, captureFps) {
   return offsets
 }
 
-function buildMotion(frames, frameTime, off, captureFps, boneLengths = null, modelQuality = 'full', { keepFeetPlanted = true, strictAnatomy = false } = {}) {
+function buildMotion(frames, frameTime, off, captureFps, boneLengths = null, modelQuality = 'full', { keepFeetPlanted = true, strictAnatomy = false, preserveFacing = true } = {}) {
   const neckStraighten  = neckStraightenFor(modelQuality)
   const headPitchOffset = headPitchOffsetFor(modelQuality)
   // Strict anatomy tightens the already-clamped joints (feet, wrists) toward neutral.
@@ -905,10 +905,19 @@ function buildMotion(frames, frameTime, off, captureFps, boneLengths = null, mod
     const vals = []
 
     // ── Hips ───────────────────────────────────────────────────────────
-    vals.push(p.hips[0], p.hips[1] + deltaY, p.hips[2])
+    // All constraint maths below runs in the yaw-normalised frame (P() removed the
+    // body's facing via preRotateY). With preserveFacing on we re-apply that yaw at
+    // the ROOT only: the hips channel carries the facing and, because every child is
+    // emitted relative to the tilt-only `hipsRot`, the whole subtree rides along and
+    // the body turns — without disturbing any of the tuned limb/twist/foot logic.
+    // Off → facing stays stabilised (the original "locked" behaviour).
+    const yr   = preserveFacing ? -yawDeg * (Math.PI / 180) : 0
+    const yawQ = [Math.cos(yr / 2), 0, Math.sin(yr / 2), 0]   // restores normalised → world
+    const hipPos = quatRotate(yawQ, [p.hips[0], p.hips[1] + deltaY, p.hips[2]])
+    vals.push(hipPos[0], hipPos[1], hipPos[2])
     const spineDir = sub(p.spine, p.hips)
     const hipsRot  = quatFromTo(REST.spine, norm(spineDir))
-    vals.push(...quatToZXY(hipsRot))
+    vals.push(...quatToZXY(quatMul(yawQ, hipsRot)))
 
     // ── Spine chain ────────────────────────────────────────────────────
     const spine1Dir   = sub(p.spine1, p.spine)
@@ -1078,13 +1087,13 @@ function buildMotion(frames, frameTime, off, captureFps, boneLengths = null, mod
 // ── Public ────────────────────────────────────────────────────────────────────
 // clipName: optional snake_case filename (without extension). If provided, the
 // downloaded file is named after it instead of the default "pose_sequence".
-export function exportBVH(frames, { captureFps = 30, clipName = null, boneLengths = null, modelQuality = 'full', keepFeetPlanted = true, strictAnatomy = false } = {}) {
+export function exportBVH(frames, { captureFps = 30, clipName = null, boneLengths = null, modelQuality = 'full', keepFeetPlanted = true, strictAnatomy = false, preserveFacing = true } = {}) {
   if (!frames?.length) return
   console.log(`[BVH] Exporting ${frames.length} frames at ${captureFps} FPS`)
   resetBoneLengthCache()
   resetFootFloor()
   const off      = getRestOffsets()
-  const bvh      = buildHierarchy(off) + '\n' + buildMotion(frames, 1 / captureFps, off, captureFps, boneLengths, modelQuality, { keepFeetPlanted, strictAnatomy })
+  const bvh      = buildHierarchy(off) + '\n' + buildMotion(frames, 1 / captureFps, off, captureFps, boneLengths, modelQuality, { keepFeetPlanted, strictAnatomy, preserveFacing })
   const blob     = new Blob([bvh], { type: 'text/plain' })
   const url      = URL.createObjectURL(blob)
   const a        = document.createElement('a')
