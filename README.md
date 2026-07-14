@@ -15,6 +15,11 @@ It should be accessible locally on http://localhost:5173/
 Everything runs locally in the browser using MediaPipe — there is no backend to set up.
 
 
+# Credits
+
+The example character shown in the 3D Pose Editor is [Low Poly Male Base - Slender](https://sketchfab.com/3d-models/low-poly-male-base-slender-9a6fd72aa31540f2a6a8e8d236778a2f) by [Mesh-Base](https://sketchfab.com/mesh-base), licensed under [CC-BY-4.0](http://creativecommons.org/licenses/by/4.0/). To use your own character instead, see `public/models/README.md`.
+
+
 # Limitations
 Trying to track several people at the same time is unreliable, so this app can only track one person at a time, even then in a video with several people if they overlap with each other it can easily get confused. While videos with only one person or videos where one person can be seen clearly it is much more perfect at tracking them.
 
