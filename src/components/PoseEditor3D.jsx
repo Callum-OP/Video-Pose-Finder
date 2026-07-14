@@ -54,6 +54,7 @@ export default function PoseEditor3D({ frames, startIndex = 0, onClose, onApplyE
   const [tool, setTool] = useState('rotate')
   const [showMesh, setShowMesh] = useState(true)
   const [selected, setSelected] = useState(null)
+  const [playing, setPlaying] = useState(false)
 
   // Latest values for the stable scene callbacks.
   const frameIdxRef = useRef(frameIdx)
@@ -135,23 +136,48 @@ export default function PoseEditor3D({ frames, startIndex = 0, onClose, onApplyE
   useEffect(() => { sceneRef.current?.setTool(tool) }, [tool])
   useEffect(() => { sceneRef.current?.setShowMesh(showMesh) }, [showMesh])
 
-  // Keyboard: Ctrl+Z undo, Ctrl+Y / Ctrl+Shift+Z redo, arrows cycle frames, Esc closes.
+  // ── Playback ───────────────────────────────────────────────────────────────
+  // Steps through the sequence using each frame's captured timing (clamped so
+  // dropped-frame gaps don't stall playback), looping back to the start.
+  useEffect(() => {
+    if (!playing) return
+    if (frames.length < 2) { setPlaying(false); return }
+    const cur = frames[frameIdx]
+    const next = frames[(frameIdx + 1) % frames.length]
+    const delta = Math.max(16, Math.min(500, (next?.timeMs ?? 0) - (cur?.timeMs ?? 0)))
+    const t = setTimeout(() => setFrameIdx((i) => (i + 1) % frames.length), delta)
+    return () => clearTimeout(t)
+  }, [playing, frameIdx, frames])
+
+  const togglePlay = useCallback(() => {
+    if (framesRef.current.length < 2) return
+    setPlaying((p) => {
+      // Deselect when starting playback so the gizmo doesn't fight the animation.
+      if (!p) { setSelected(null); sceneRef.current?.select(null) }
+      return !p
+    })
+  }, [])
+
+  // Keyboard: Ctrl+Z undo, Ctrl+Y / Ctrl+Shift+Z redo, Space play/pause,
+  // arrows cycle frames, Esc closes.
   useEffect(() => {
     const onKey = (e) => {
       const mod = e.ctrlKey || e.metaKey
       const k = e.key.toLowerCase()
       if (mod && k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); return }
       if (mod && (k === 'y' || (k === 'z' && e.shiftKey))) { e.preventDefault(); redo(); return }
-      if (e.key === 'Escape') onClose()
+      if (e.key === ' ') { e.preventDefault(); togglePlay() }
+      else if (e.key === 'Escape') onClose()
       else if (e.key === 'ArrowRight') step(1)
       else if (e.key === 'ArrowLeft') step(-1)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [frames.length, undo, redo])
+  }, [frames.length, undo, redo, togglePlay])
 
   function step(d) {
+    setPlaying(false)
     setFrameIdx((i) => Math.max(0, Math.min(frames.length - 1, i + d)))
   }
 
@@ -219,10 +245,19 @@ export default function PoseEditor3D({ frames, startIndex = 0, onClose, onApplyE
 
       {/* Bottom frame navigation */}
       <div style={s.bottombar}>
+        {frames.length > 1 && (
+          <button
+            className={playing ? 'btn btn--accent' : 'btn btn--ghost'}
+            onClick={togglePlay}
+            title="Play/pause the pose sequence (Space)"
+          >
+            {playing ? '❚❚ Pause' : '▶ Play'}
+          </button>
+        )}
         <button className="btn btn--ghost" onClick={() => step(-1)} disabled={frameIdx === 0}>◄ Prev</button>
         <input
           type="range" min={0} max={frames.length - 1} value={frameIdx}
-          onChange={(e) => setFrameIdx(Number(e.target.value))}
+          onChange={(e) => { setPlaying(false); setFrameIdx(Number(e.target.value)) }}
           style={s.scrubber}
         />
         <button className="btn btn--ghost" onClick={() => step(1)} disabled={frameIdx === frames.length - 1}>Next ►</button>
