@@ -9,11 +9,17 @@ import {
 } from '../utils/poseEditMath';
 import { buildRigBindData, poseRig, poseFingers } from '../utils/retargetRig';
 
-// Default character candidates, tried in order — drop a Mixamo-rigged character.fbx
-// in public/models to use your own; the bundled Xbot.glb is the fallback. Paths are
-// prefixed with Vite's BASE_URL so they resolve under the app's base (e.g. on Pages).
+// Default character candidates, tried in order — drop a rigged character.fbx (or
+// .glb) in public/models (git-ignored) to override; the bundled example is
+// "Low Poly Male Base - Slender" by Mesh-Base (Sketchfab, CC-BY-4.0), which lives
+// at the public root so it ships with the Pages deploy. Paths are prefixed with
+// Vite's BASE_URL so they resolve under the app's base (e.g. on Pages).
 const BASE = import.meta.env.BASE_URL || '/';
-const DEFAULT_MODELS = [`${BASE}models/character.fbx`, `${BASE}models/character.glb`];
+const DEFAULT_MODELS = [
+  `${BASE}models/character.fbx`,
+  `${BASE}models/character.glb`,
+  `${BASE}low_poly_male_base_-_slender.glb`,
+];
 
 const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 

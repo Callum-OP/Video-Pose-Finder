@@ -15,7 +15,27 @@ import { MP } from './poseEditMath.js';
 //
 // Bone names are matched by their Mixamo *suffix* so this works for glTF
 // ("mixamorig:LeftArm") and FBX ("mixamorig:LeftArm", "mixamorigLeftArm",
-// "Armature|mixamorig:LeftArm", or bare "LeftArm") alike.
+// "Armature|mixamorig:LeftArm", or bare "LeftArm") alike. UE/Blender-style
+// names ("pelvis", "spine01", "upperarm_L", "thigh_r", ...) — used by the
+// bundled example character — are aliased onto the same Mixamo suffixes.
+
+// UE-style bone base → Mixamo suffix. Axial bones have no side marker; sided
+// bones appear as e.g. "upperarm_L" / "upperarm_r" (any decoration after the
+// side token, like "_M_lowpoly.001", is ignored). Bases with no alias (twist/
+// breast/root helpers) keep their original name and simply follow their parent.
+const AXIAL_ALIASES = {
+  pelvis: 'Hips', spine01: 'Spine', spine02: 'Spine1', spine03: 'Spine2',
+  neck: 'Neck', head: 'Head',
+};
+const SIDED_ALIASES = {
+  clavicle: 'Shoulder', upperarm: 'Arm', lowerarm: 'ForeArm', hand: 'Hand',
+  thigh: 'UpLeg', calf: 'Leg', foot: 'Foot', toes: 'ToeBase', ball: 'ToeBase',
+  thumb01: 'HandThumb1', thumb02: 'HandThumb2', thumb03: 'HandThumb3',
+  index01: 'HandIndex1', index02: 'HandIndex2', index03: 'HandIndex3',
+  middle01: 'HandMiddle1', middle02: 'HandMiddle2', middle03: 'HandMiddle3',
+  ring01: 'HandRing1', ring02: 'HandRing2', ring03: 'HandRing3',
+  pinky01: 'HandPinky1', pinky02: 'HandPinky2', pinky03: 'HandPinky3',
+};
 
 // Strip namespace/prefix decoration down to the bare Mixamo bone suffix.
 function normName(name = '') {
@@ -23,6 +43,10 @@ function normName(name = '') {
   const bar = n.lastIndexOf('|'); if (bar >= 0) n = n.slice(bar + 1);
   const colon = n.lastIndexOf(':'); if (colon >= 0) n = n.slice(colon + 1);
   n = n.replace(/^mixamorig[:_]?/i, '');
+  const tokens = n.toLowerCase().split('_');
+  const side = tokens[1] === 'l' ? 'Left' : tokens[1] === 'r' ? 'Right' : null;
+  if (side && SIDED_ALIASES[tokens[0]]) return side + SIDED_ALIASES[tokens[0]];
+  if (!side && AXIAL_ALIASES[tokens[0]]) return AXIAL_ALIASES[tokens[0]];
   return n;
 }
 
