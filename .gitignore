@@ -39,8 +39,8 @@ venv/
 *.pem
 service-account.json
 
-# Models
-public/models/
+# Outdated code
 backend/
+
 # Reference media (local only)
 references/
