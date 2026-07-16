@@ -27,12 +27,8 @@ Trying to track several people at the same time is unreliable, so this app can o
 # Issues
 Feet are not always planted firmly on the ground.
 
-The first frame of the pose sequence appears mangled and incorrect (but only if its a video).
-
 
 # Features To Consider
-Have a scroller to choose when the animation they want starts and ends.
-
 Allow gifs to be imported? Although might not be worth the memory and code required to convert it.
 
 Could have an advanced option that lets the user move or place the skeleton where it should be if that helps the program that tracks it know where to start.
